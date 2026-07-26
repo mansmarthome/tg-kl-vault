@@ -3,5 +3,6 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod feed;
+pub mod opml;
 pub mod preview;
 pub mod scheduler;
