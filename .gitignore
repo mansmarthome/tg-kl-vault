@@ -253,3 +253,5 @@ flowerss-bot
 
 *.db
 .dockerfile
+*.db-shm
+*.db-wal
