@@ -1,41 +1,359 @@
-# flowerss bot
+# flowerss-bot
 
-[![Build Status](https://github.com/indes/flowerss-bot/workflows/Release/badge.svg)](https://github.com/indes/flowerss-bot/actions?query=workflow%3ARelease)
-[![Test Status](https://github.com/indes/flowerss-bot/workflows/Test/badge.svg)](https://github.com/indes/flowerss-bot/actions?query=workflow%3ATest)
-![Build Docker Image](https://github.com/indes/flowerss-bot/workflows/Build%20Docker%20Image/badge.svg)
-[![Go Report Card](https://goreportcard.com/badge/github.com/indes/flowerss-bot)](https://goreportcard.com/report/github.com/indes/flowerss-bot)
-![GitHub](https://img.shields.io/github/license/indes/flowerss-bot.svg)
-
-[安装与使用文档](https://flowerss-bot.now.sh/)  
-
-<img src="https://github.com/rssflow/img/raw/master/images/rssflow_demo.gif" width = "300"/>
+A self-hostable Telegram RSS bot. This repository is a Rust rewrite of the original [`indes/flowerss-bot`](https://github.com/indes/flowerss-bot), keeping the existing SQLite database layout and Telegram command behavior as compatible as possible.
 
 ## Features
 
-- 常见的 RSS Bot 该有的功能
-- 支持 Telegram 应用内 instant view
-- 支持为 Group 和 Channel 订阅 RSS 消息
-- 丰富的订阅设置
+- Subscribe Telegram private chats and chats where the bot receives commands to RSS/Atom feeds.
+- Periodic feed fetching, parsing, deduplication, and Telegram delivery.
+- SQLite storage compatible with the original Go database schema.
+- OPML import/export for bulk subscription management.
+- Inline buttons for subscription settings and unsubscribe flows.
+- SOCKS5 proxy support for feed fetching.
+- Optional custom Telegram Bot API endpoint.
+- Docker / Docker Compose deployment.
+- Runtime configuration through TOML and environment variables.
 
-## 安装与使用
+## Supported commands
 
-详细安装与使用方法请查阅项目[使用文档](https://flowerss-bot.now.sh/)。  
-
-使用命令：
-
+```text
+/start                    开始使用
+/sub [url]                订阅RSS源
+/unsub [source_id]         退订RSS源
+/list                     已订阅的RSS源
+/set                      设置订阅
+/setfeedtag [id] [tags]    设置rss订阅标签
+/setinterval [min] [ids]   设置订阅刷新频率
+/unsuball                 取消所有订阅
+/activeall                开启抓取订阅更新
+/pauseall                 停止抓取所有订阅更新
+/import                   导入OPML文件
+/export                   导出OPML
+/ping                     health check
+/help                     帮助
+/version                  Bot 版本信息
 ```
-/sub [url] 订阅（url 为可选）
-/unsub [url] 取消订阅（url 为可选）
-/list 查看当前订阅
-/set 设置订阅
-/check 检查当前订阅
-/setfeedtag [sub id] [tag1] [tag2] 设置订阅标签（最多设置三个Tag，以空格分割）
-/setinterval [interval] [sub id] 设置订阅刷新频率（可设置多个sub id，以空格分割）
-/activeall 开启所有订阅
-/pauseall 暂停所有订阅
-/import 导入 OPML 文件
-/export 导出 OPML 文件
-/unsuball 取消所有订阅
-/help 帮助
+
+> Note: `/check` is mentioned in some legacy documentation, but the Go source did not have a handler for it, so the Rust rewrite does not add it.
+
+## Current implementation notes
+
+Implemented:
+
+- Telegram command and callback dispatcher.
+- SQLite migrations and repository methods.
+- Feed fetch/parse/dedup pipeline.
+- OPML import/export.
+- Message rendering and Telegram sending pipeline.
+- 429 retry handling with Telegram `retry_after`.
+- Auto-unsubscribe on Telegram `Forbidden` errors.
+- Graceful shutdown on SIGINT/SIGTERM.
+- Retention pruning for old `contents` rows while keeping a dedup baseline.
+
+Not yet implemented / limitations:
+
+- Real Telegraph publisher integration. Telegraph config keys are present, but the current publisher is a no-op.
+- Legacy `@channel` mention preloading and full admin-check middleware are not complete yet; use private chats or send commands directly in the chat where the bot is installed.
+- Full production cut-over validation must still be done with your real bot token and production `data.db`.
+
+## Self-hosted deployment
+
+### 1. Create a Telegram bot
+
+1. Open Telegram and talk to [`@BotFather`](https://t.me/BotFather).
+2. Run `/newbot` and follow the prompts.
+3. Copy the bot token.
+4. For group/channel usage, invite the bot to the target group/channel and give it the permissions needed to read commands and send messages.
+
+### 2. Prepare a server
+
+Recommended minimum:
+
+- Linux VPS or home server.
+- Docker Engine + Docker Compose plugin, or a Rust toolchain if running without Docker.
+- Persistent disk for `data.db`.
+- Outbound HTTPS access to Telegram Bot API and subscribed RSS sites.
+
+Clone the repository:
+
+```bash
+git clone https://github.com/siygle/flowerss-bot.git
+cd flowerss-bot
 ```
-详细使用方法请查阅项目[使用文档](https://flowerss-bot.now.sh/#/usage)。 
+
+### 3. Create configuration
+
+Copy the example config:
+
+```bash
+cp config.example.toml config.toml
+```
+
+Edit `config.toml`:
+
+```toml
+bot_token = "123456:telegram-bot-token"
+telegraph_token = []
+telegraph_account = ""
+telegraph_author_name = "flowerss-bot"
+telegraph_author_url = ""
+socks5 = ""
+update_interval = 10
+user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
+allowed_users = []
+preview_text = 0
+disable_web_page_preview = false
+message_mode = "html"
+
+[sqlite]
+path = "/app/data/data.db"
+
+[telegram]
+endpoint = ""
+
+[log]
+level = "info"
+
+[fetch]
+concurrency = 8
+retention_days = 90
+```
+
+Important fields:
+
+| Key | Description |
+|---|---|
+| `bot_token` | Telegram bot token from BotFather. Required for normal runtime. |
+| `socks5` | Optional SOCKS5 proxy, for example `127.0.0.1:1080`. Leave empty to disable. |
+| `update_interval` | Default feed refresh interval in minutes. |
+| `allowed_users` | Optional Telegram user/chat allow-list. Empty means everyone can use the bot. |
+| `preview_text` | Preview text length. `0` keeps default behavior. |
+| `disable_web_page_preview` | Disable Telegram link previews when sending messages. |
+| `message_mode` | `html` or `markdown`. |
+| `sqlite.path` | SQLite database path. In Docker Compose, use `/app/data/data.db`. |
+| `telegram.endpoint` | Optional custom Telegram Bot API server endpoint. Empty means official Telegram API. |
+| `log.level` | Tracing log level, for example `error`, `warn`, `info`, `debug`, `trace`. |
+| `fetch.concurrency` | Number of feeds fetched concurrently. |
+| `fetch.retention_days` | Delete old content rows after this many days while keeping recent dedup baseline rows. |
+| `telegraph_*` | Reserved for Telegraph integration; currently no-op in this Rust rewrite. |
+
+### 4. Environment variable overrides
+
+Every config value can be supplied through environment variables with the `FLOWERSS_` prefix. Useful examples:
+
+```bash
+FLOWERSS_BOT_TOKEN="123456:telegram-bot-token"
+FLOWERSS_SQLITE_PATH="/app/data/data.db"
+FLOWERSS_TELEGRAM_ENDPOINT="https://api.telegram.org"
+FLOWERSS_LOG_LEVEL="info"
+FLOWERSS_FETCH_CONCURRENCY="8"
+FLOWERSS_FETCH_RETENTION_DAYS="90"
+```
+
+Nested config mappings:
+
+- `FLOWERSS_SQLITE_PATH` -> `sqlite.path`
+- `FLOWERSS_TELEGRAM_ENDPOINT` -> `telegram.endpoint`
+- `FLOWERSS_LOG_LEVEL` -> `log.level`
+- `FLOWERSS_FETCH_CONCURRENCY` -> `fetch.concurrency`
+- `FLOWERSS_FETCH_RETENTION_DAYS` -> `fetch.retention_days`
+
+### 5. Run with Docker Compose
+
+The included `docker-compose.yml` expects:
+
+- `./config.toml` mounted as `/app/config.toml`
+- `./data/` mounted as `/app/data/`
+
+Create the data directory:
+
+```bash
+mkdir -p data
+```
+
+Start the bot:
+
+```bash
+docker compose up -d --build
+```
+
+View logs:
+
+```bash
+docker compose logs -f flowerss
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+Upgrade:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+### 6. Run with Docker directly
+
+Build:
+
+```bash
+docker build -t flowerss-bot:latest .
+```
+
+Run:
+
+```bash
+docker run -d \
+  --name flowerss-bot \
+  --restart unless-stopped \
+  -v "$PWD/config.toml:/app/config.toml:ro" \
+  -v "$PWD/data:/app/data" \
+  flowerss-bot:latest \
+  -c /app/config.toml
+```
+
+Logs:
+
+```bash
+docker logs -f flowerss-bot
+```
+
+### 7. Run from source
+
+Install Rust, then:
+
+```bash
+cargo build --release -p flowerss-bot
+./target/release/flowerss-bot -c config.toml
+```
+
+Dry-run mode:
+
+```bash
+cargo run -p flowerss-bot -- --dry-run -c config.toml
+```
+
+`--dry-run` loads config, opens SQLite, runs migrations, and exercises scheduler/fetch/dedup logic without Telegram sends.
+
+### 8. systemd service example
+
+If you run the release binary directly:
+
+```ini
+[Unit]
+Description=flowerss-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/flowerss-bot
+ExecStart=/opt/flowerss-bot/flowerss-bot -c /opt/flowerss-bot/config.toml
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Install and start:
+
+```bash
+sudo cp flowerss-bot.service /etc/systemd/system/flowerss-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now flowerss-bot
+sudo journalctl -u flowerss-bot -f
+```
+
+### 9. Migrating from an existing Go deployment
+
+The Rust rewrite is designed to open the original Go `data.db` directly.
+
+Recommended migration flow:
+
+1. Stop the old Go bot.
+2. Back up the database:
+
+   ```bash
+   cp data.db data.db.bak.$(date +%Y%m%d-%H%M%S)
+   ```
+
+3. Put the DB where the Rust bot expects it:
+
+   - Docker Compose: `./data/data.db`
+   - Source/systemd: whatever path is set in `[sqlite].path`
+
+4. Run a dry-run first:
+
+   ```bash
+   cargo run -p flowerss-bot -- --dry-run -c config.toml
+   ```
+
+   or inside Docker:
+
+   ```bash
+   docker compose run --rm flowerss --dry-run -c /app/config.toml
+   ```
+
+5. Start the Rust bot.
+6. Watch logs and test `/ping`, `/list`, `/sub`, `/export` from Telegram.
+
+The migrations are additive and keep the legacy tables/columns. Do not delete the original `data.db` until the Rust bot has been verified in production.
+
+## Development
+
+Run tests:
+
+```bash
+cargo test --workspace
+```
+
+Run clippy:
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Run local dry-run:
+
+```bash
+cargo run -p flowerss-bot -- --dry-run -c config.example.toml
+```
+
+## Troubleshooting
+
+### Bot does not reply
+
+- Confirm `bot_token` is correct.
+- Check container or systemd logs.
+- Make sure the bot was started with the expected config file.
+- If using a custom `telegram.endpoint`, verify it is reachable.
+
+### SQLite file is missing or empty
+
+- In Docker, ensure `./data` exists and is mounted.
+- Confirm `[sqlite].path = "/app/data/data.db"` for Docker Compose.
+- Check file permissions for the user running the container/binary.
+
+### Feed cannot be fetched
+
+- Check outbound network connectivity.
+- If your network requires a proxy, set `socks5`.
+- Verify the feed URL is reachable with `curl` from the same host.
+
+### Telegram 429 rate limit
+
+The bot retries once after Telegram's `retry_after` value. If rate limits keep happening, lower `fetch.concurrency` or increase feed intervals.
+
+### Telegram Forbidden errors
+
+When Telegram returns `Forbidden`, the bot automatically unsubscribes that user/chat from the affected source, matching the intended production behavior.
+
+## License
+
+MIT OR Apache-2.0, matching the Rust workspace metadata.
