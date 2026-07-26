@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use flowerss_bot::{
+    bot::runtime::run_bot,
     cli::Args,
     config::Config,
     db::{self, repo::Repo},
@@ -31,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
         repo,
         fetcher,
         NoopPublisher,
-        config,
+        config.clone(),
         SchedulerOptions { dry_run: args.dry_run, ..SchedulerOptions::default() },
     );
 
@@ -46,7 +47,14 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
-    scheduler.run_until_shutdown(shutdown_rx).await.context("run scheduler")?;
+    let bot_config = config.clone();
+    let bot_repo = scheduler.repo().clone();
+    let bot_task = tokio::spawn(async move { run_bot(bot_config, bot_repo).await });
+
+    tokio::select! {
+        result = scheduler.run_until_shutdown(shutdown_rx) => result.context("run scheduler")?,
+        result = bot_task => result.context("join bot task")??,
+    }
     shutdown_task.abort();
     Ok(())
 }

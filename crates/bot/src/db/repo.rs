@@ -4,6 +4,20 @@ use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 
 use super::models::{Content, Source, Subscribe, User};
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct SubscriptionSource {
+    pub subscribe_id: i64,
+    pub user_id: Option<i64>,
+    pub source_id: Option<i64>,
+    pub enable_notification: Option<i64>,
+    pub enable_telegraph: Option<i64>,
+    pub tag: Option<String>,
+    pub interval: Option<i64>,
+    pub wait_time: Option<i64>,
+    pub link: Option<String>,
+    pub title: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Repo {
     pool: SqlitePool,
@@ -77,6 +91,99 @@ impl Repo {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
+    }
+
+    pub async fn subscribe_user(&self, user_id: i64, source_id: i64) -> sqlx::Result<bool> {
+        self.ensure_user(user_id).await?;
+        if self.subscription(user_id, source_id).await?.is_some() {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO subscribes \
+             (user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at) \
+             VALUES (?, ?, 1, 1, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(user_id)
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(true)
+    }
+
+    pub async fn subscription(&self, user_id: i64, source_id: i64) -> sqlx::Result<Option<Subscribe>> {
+        sqlx::query_as::<_, Subscribe>(
+            "SELECT id, user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at \
+             FROM subscribes WHERE user_id = ? AND source_id = ? LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(source_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn unsubscribe_user(&self, user_id: i64, source_id: i64) -> sqlx::Result<bool> {
+        let result = sqlx::query("DELETE FROM subscribes WHERE user_id = ? AND source_id = ?")
+            .bind(user_id)
+            .bind(source_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn unsubscribe_all_user(&self, user_id: i64) -> sqlx::Result<u64> {
+        let result = sqlx::query("DELETE FROM subscribes WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn subscriptions_for_user(&self, user_id: i64) -> sqlx::Result<Vec<SubscriptionSource>> {
+        sqlx::query_as::<_, SubscriptionSource>(
+            "SELECT subscribes.id AS subscribe_id, subscribes.user_id, subscribes.source_id, \
+                    subscribes.enable_notification, subscribes.enable_telegraph, subscribes.tag, \
+                    subscribes.interval, subscribes.wait_time, sources.link, sources.title \
+             FROM subscribes JOIN sources ON sources.id = subscribes.source_id \
+             WHERE subscribes.user_id = ? ORDER BY sources.id",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn set_subscription_tag(&self, user_id: i64, source_id: i64, tag: &str) -> sqlx::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE subscribes SET tag = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
+        )
+        .bind(tag)
+        .bind(user_id)
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn set_subscription_interval(&self, user_id: i64, source_id: i64, interval: i64) -> sqlx::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE subscribes SET interval = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
+        )
+        .bind(interval)
+        .bind(user_id)
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn set_all_enabled(&self, user_id: i64, enabled: bool) -> sqlx::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE subscribes SET wait_time = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+        )
+        .bind(if enabled { 0 } else { 1 })
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn subscribes_for_source(&self, source_id: i64) -> sqlx::Result<Vec<Subscribe>> {
@@ -245,6 +352,24 @@ mod tests {
         assert_eq!(source_id, 1);
         assert_eq!(repo.source_by_link("https://example.com/feed").await.unwrap().unwrap().id, 1);
         assert_eq!(repo.list_sources().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn subscription_crud_methods_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+
+        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        assert!(repo.subscribe_user(42, source_id).await.unwrap());
+        assert!(!repo.subscribe_user(42, source_id).await.unwrap());
+        assert_eq!(repo.subscriptions_for_user(42).await.unwrap().len(), 1);
+        assert!(repo.set_subscription_tag(42, source_id, "#tag").await.unwrap());
+        assert!(repo.set_subscription_interval(42, source_id, 30).await.unwrap());
+        assert_eq!(repo.set_all_enabled(42, false).await.unwrap(), 1);
+        assert!(repo.unsubscribe_user(42, source_id).await.unwrap());
+        assert!(!repo.unsubscribe_user(42, source_id).await.unwrap());
     }
 
     #[tokio::test]

@@ -38,6 +38,10 @@ where
         Self { repo, fetcher, publisher, config, options }
     }
 
+    pub fn repo(&self) -> &Repo {
+        &self.repo
+    }
+
     pub async fn run_until_shutdown(&self, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
         loop {
             self.run_once().await?;
