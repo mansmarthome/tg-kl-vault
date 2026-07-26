@@ -19,3 +19,151 @@ impl PreviewPublisher for NoopPublisher {
         Ok(None)
     }
 }
+
+/// Port of Go's `preview.TrimDescription`. Not a wire-format constant (not
+/// listed in 00-OVERVIEW's compatibility table), so this is a faithful but
+/// not byte-exact port: entity decoding and tag stripping are done with
+/// `ammonia`/manual passes rather than the exact Go libraries.
+///
+/// `limit == 0` disables the preview entirely, matching the Go default.
+pub fn trim_description(desc: &str, limit: u32) -> String {
+    if limit == 0 {
+        return String::new();
+    }
+
+    let unescaped = decode_entities(desc);
+    // Go's regex `<br(| /)>` matches exactly "<br>" or "<br />" (no bare
+    // "<br/>"), normalizing both to "<br>" before turning it into a newline.
+    let normalized = unescaped.replace("<br />", "<br>");
+    let with_newlines = normalized.replace("<br>", "\n");
+    let collapsed = collapse_newlines(&with_newlines);
+
+    let stripped = strip_tags(&collapsed);
+    let trimmed = stripped.trim_matches('\n');
+    trimmed.chars().take(limit as usize).collect()
+}
+
+/// Remove `<tag ...>` spans, keeping their surrounding text untouched (no
+/// re-escaping), matching the plain-text output of Go's strip-tags library.
+/// Quoted attribute values may contain `>`; track quote state so those don't
+/// prematurely close the tag.
+fn strip_tags(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '<' {
+            out.push(ch);
+            continue;
+        }
+        let mut quote: Option<char> = None;
+        for next in chars.by_ref() {
+            match quote {
+                Some(q) if next == q => quote = None,
+                Some(_) => {}
+                None => match next {
+                    '\'' | '"' => quote = Some(next),
+                    '>' => break,
+                    _ => {}
+                },
+            }
+        }
+    }
+    out
+}
+
+fn collapse_newlines(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_newline = false;
+    for ch in input.chars() {
+        if ch == '\n' {
+            if !prev_newline {
+                out.push(ch);
+            }
+            prev_newline = true;
+        } else {
+            out.push(ch);
+            prev_newline = false;
+        }
+    }
+    out
+}
+
+fn decode_entities(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        match tail.find(';').filter(|&i| i <= 10) {
+            Some(semi) => {
+                let entity = &tail[1..semi];
+                match decode_entity(entity) {
+                    Some(ch) => out.push(ch),
+                    None => out.push_str(&tail[..=semi]),
+                }
+                rest = &tail[semi + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn decode_entity(entity: &str) -> Option<char> {
+    match entity {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" | "#39" => Some('\''),
+        "nbsp" => Some('\u{a0}'),
+        _ => {
+            if let Some(hex) = entity.strip_prefix("#x").or_else(|| entity.strip_prefix("#X")) {
+                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+            } else if let Some(dec) = entity.strip_prefix('#') {
+                dec.parse::<u32>().ok().and_then(char::from_u32)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limit_zero_disables_preview() {
+        assert_eq!(trim_description("hello", 0), "");
+    }
+
+    #[test]
+    fn strips_tags_and_converts_br_to_newline() {
+        let desc = "<p>Hello<br>World</p><br />Again";
+        assert_eq!(trim_description(desc, 100), "Hello\nWorld\nAgain");
+    }
+
+    #[test]
+    fn collapses_blank_lines_and_trims_edges() {
+        let desc = "<br><br>Body<br><br><br>";
+        assert_eq!(trim_description(desc, 100), "Body");
+    }
+
+    #[test]
+    fn decodes_common_entities() {
+        // Matches Go's pipeline order (unescape, then strip tags): a decoded
+        // "&lt;tag&gt;" becomes a literal "<tag>" and is then stripped as if
+        // it were real markup, same as the Go original.
+        assert_eq!(trim_description("A &amp; B &lt;tag&gt;", 100), "A & B ");
+    }
+
+    #[test]
+    fn truncates_by_char_count() {
+        assert_eq!(trim_description("Hello World", 5), "Hello");
+    }
+}

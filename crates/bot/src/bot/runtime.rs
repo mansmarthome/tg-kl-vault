@@ -10,12 +10,7 @@ pub struct BotState {
     pub config: Config,
 }
 
-pub async fn run_bot(config: Config, repo: Repo) -> anyhow::Result<()> {
-    if config.bot_token.is_empty() {
-        anyhow::bail!("bot_token is required unless --dry-run is used");
-    }
-
-    let bot = Bot::new(config.bot_token.clone());
+pub async fn run_bot(bot: Bot, config: Config, repo: Repo) -> anyhow::Result<()> {
     let commands = COMMANDS
         .iter()
         .filter(|(_, description)| !description.is_empty())
