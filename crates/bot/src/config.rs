@@ -64,8 +64,19 @@ impl Config {
         if let Some(path) = path {
             figment = figment.merge(Toml::file(path));
         }
-        // FLOWERSS_BOT_TOKEN -> bot_token, FLOWERSS_SQLITE_PATH -> sqlite.path.
-        figment.merge(Env::prefixed("FLOWERSS_").split("_")).extract().map_err(Box::new)
+        // FLOWERSS_BOT_TOKEN -> bot_token; FLOWERSS_SQLITE_PATH -> sqlite.path.
+        let env = Env::prefixed("FLOWERSS_").map(|key| {
+            let key = key.as_str().to_ascii_lowercase();
+            match key.as_str() {
+                "sqlite_path" => "sqlite.path".into(),
+                "telegram_endpoint" => "telegram.endpoint".into(),
+                "log_level" => "log.level".into(),
+                "fetch_concurrency" => "fetch.concurrency".into(),
+                "fetch_retention_days" => "fetch.retention_days".into(),
+                _ => key.into(),
+            }
+        });
+        figment.merge(env).extract().map_err(Box::new)
     }
 }
 

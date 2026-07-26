@@ -159,6 +159,7 @@ where
                         self.repo
                             .mark_source_success(source.id, feed.etag.as_deref(), feed.last_modified.as_deref(), next)
                             .await?;
+                        self.repo.prune_contents(source.id, self.config.fetch.retention_days, 200).await?;
                     }
                 }
                 Err(err) => {
