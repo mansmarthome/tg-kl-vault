@@ -6,13 +6,16 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+bytes = "1.12.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.4", features = ["derive"] }
+feed-rs = "2.4.0"
 figment = { version = "0.10.19", features = ["toml", "env"] }
 futures = "0.3.33"
+reqwest = { version = "0.12", default-features = false, features = ["socks", "gzip", "brotli", "rustls-tls", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "macros", "migrate", "chrono"] }
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 url.workspace = true
