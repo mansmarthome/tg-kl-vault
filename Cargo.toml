@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/telegraph", "crates/bot"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# NOTE(agent): versions below are hints written mid-2026 and may be stale or
+# wrong. Resolve real versions with `cargo add`. Do NOT trust the stated
+# teloxide major version — verify it on docs.rs before writing any bot code.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"

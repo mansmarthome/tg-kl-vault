@@ -1,0 +1,25 @@
+[package]
+name = "telegraph"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Telegraph (telegra.ph) API client and HTML-to-node converter"
+
+[features]
+default = ["client"]
+client = ["dep:reqwest", "dep:tokio"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+thiserror.workspace = true
+
+scraper = "0.21"          # verify; wraps html5ever. ego_tree comes with it.
+ego-tree = "0.9.0"          # verify version matches scraper's re-export
+
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", optional = true, features = ["time"] }
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }
