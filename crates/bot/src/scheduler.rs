@@ -1,5 +1,6 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::{
@@ -37,8 +38,24 @@ where
         Self { repo, fetcher, publisher, config, options }
     }
 
-    /// Run one bounded due-source pass. The continuous loop will call this and
-    /// sleep/select on shutdown; keeping this separable makes dry-run testing safe.
+    pub async fn run_until_shutdown(&self, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
+        loop {
+            self.run_once().await?;
+            tokio::select! {
+                biased;
+                changed = shutdown.changed() => {
+                    if changed.is_ok() && *shutdown.borrow() {
+                        break;
+                    }
+                }
+                () = tokio::time::sleep(Duration::from_secs(30)) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Run one bounded due-source pass. Keeping this separable makes dry-run
+    /// testing safe and enables the required production DB dry-run gate.
     pub async fn run_once(&self) -> anyhow::Result<()> {
         let now = now_unix();
         let due = self.repo.sources_due(now, self.options.batch_limit).await?;
@@ -116,6 +133,9 @@ where
                 }
                 Err(err) => {
                     warn!(source_id = source.id, error = %err, "fetch source failed");
+                    if !self.options.dry_run {
+                        self.repo.mark_source_error(source.id, backoff_fetch_at(now, source.error_count.unwrap_or(0))).await?;
+                    }
                 }
             }
         }
@@ -131,17 +151,30 @@ fn next_fetch_at(now: i64, interval_minutes: u64) -> i64 {
     now + interval_minutes.max(1) as i64 * 60
 }
 
+fn backoff_fetch_at(now: i64, current_error_count: i64) -> i64 {
+    let exponent = current_error_count.clamp(0, 6) as u32;
+    let minutes = 2_i64.pow(exponent).min(360);
+    now + minutes * 60
+}
+
 fn non_empty(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::next_fetch_at;
+    use super::{backoff_fetch_at, next_fetch_at};
 
     #[test]
     fn next_fetch_at_uses_at_least_one_minute() {
         assert_eq!(next_fetch_at(100, 0), 160);
         assert_eq!(next_fetch_at(100, 10), 700);
+    }
+
+    #[test]
+    fn backoff_is_exponential_and_capped() {
+        assert_eq!(backoff_fetch_at(0, 0), 60);
+        assert_eq!(backoff_fetch_at(0, 3), 8 * 60);
+        assert_eq!(backoff_fetch_at(0, 99), 64 * 60);
     }
 }

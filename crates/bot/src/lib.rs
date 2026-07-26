@@ -5,4 +5,5 @@ pub mod db;
 pub mod feed;
 pub mod opml;
 pub mod preview;
+pub mod ratelimit;
 pub mod scheduler;

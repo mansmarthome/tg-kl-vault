@@ -8,6 +8,7 @@ use flowerss_bot::{
     preview::NoopPublisher,
     scheduler::{Scheduler, SchedulerOptions},
 };
+use tokio::sync::watch;
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -23,20 +24,30 @@ async fn main() -> anyhow::Result<()> {
         config.sqlite.path, config.update_interval, args.dry_run
     );
 
+    let pool = db::connect(&config.sqlite.path).await.context("connect sqlite")?;
+    let repo = Repo::new(pool);
+    let fetcher = Fetcher::new(&config).context("build feed fetcher")?;
+    let scheduler = Scheduler::new(
+        repo,
+        fetcher,
+        NoopPublisher,
+        config,
+        SchedulerOptions { dry_run: args.dry_run, ..SchedulerOptions::default() },
+    );
+
     if args.dry_run {
-        let pool = db::connect(&config.sqlite.path).await.context("connect sqlite")?;
-        let repo = Repo::new(pool);
-        let fetcher = Fetcher::new(&config).context("build feed fetcher")?;
-        let scheduler = Scheduler::new(
-            repo,
-            fetcher,
-            NoopPublisher,
-            config,
-            SchedulerOptions { dry_run: true, ..SchedulerOptions::default() },
-        );
         scheduler.run_once().await.context("run dry-run scheduler pass")?;
+        return Ok(());
     }
 
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown_task = tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = shutdown_tx.send(true);
+    });
+
+    scheduler.run_until_shutdown(shutdown_rx).await.context("run scheduler")?;
+    shutdown_task.abort();
     Ok(())
 }
 
