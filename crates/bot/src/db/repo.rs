@@ -199,6 +199,18 @@ impl Repo {
         .await
     }
 
+    pub async fn mark_user_sources_due(&self, user_id: i64) -> sqlx::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE sources \
+             SET next_fetch_at = 0, error_count = 0, updated_at = CURRENT_TIMESTAMP \
+             WHERE id IN (SELECT source_id FROM subscribes WHERE user_id = ? AND source_id IS NOT NULL)",
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn set_subscription_tag(&self, user_id: i64, source_id: i64, tag: &str) -> sqlx::Result<bool> {
         let result = sqlx::query(
             "UPDATE subscribes SET tag = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
@@ -469,6 +481,27 @@ mod tests {
         assert!(repo.set_subscription_interval(42, source_id, 30).await.unwrap());
         assert!(repo.unsubscribe_user(42, source_id).await.unwrap());
         assert!(!repo.unsubscribe_user(42, source_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mark_user_sources_due_resumes_and_schedules_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool.clone());
+
+        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        repo.subscribe_user(42, source_id).await.unwrap();
+        sqlx::query("UPDATE sources SET next_fetch_at = 999999, error_count = 101 WHERE id = ?")
+            .bind(source_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(repo.mark_user_sources_due(42).await.unwrap(), 1);
+        let source = repo.get_source(source_id).await.unwrap().unwrap();
+        assert_eq!(source.next_fetch_at, 0);
+        assert_eq!(source.error_count, Some(0));
     }
 
     #[tokio::test]

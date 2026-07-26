@@ -96,6 +96,7 @@ async fn handle_command(bot: Bot, msg: Message, cmd: Command, state: Arc<BotStat
         Command::Setfeedtag(payload) => handle_set_tag(&bot, &msg, &state, payload.trim()).await?,
         Command::Setinterval(payload) => handle_set_interval(&bot, &msg, &state, payload.trim()).await?,
         Command::Set => handle_set(&bot, &msg, &state).await?,
+        Command::Check => handle_check(&bot, &msg, &state).await?,
         Command::Import => {
             bot.send_message(
                 msg.chat.id,
@@ -242,6 +243,16 @@ async fn handle_set(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResul
     bot.send_message(msg.chat.id, "请选择你要设置的源")
         .reply_markup(feed_item_list_keyboard(crate::bot::callback::Button::SetFeedItem, msg.chat.id.0, &items))
         .await?;
+    Ok(())
+}
+
+async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
+    let count = state.repo.mark_user_sources_due(msg.chat.id.0).await.map_err(to_request_error)?;
+    if count == 0 {
+        bot.send_message(msg.chat.id, "当前没有订阅").await?;
+    } else {
+        bot.send_message(msg.chat.id, format!("已开始检查当前订阅，共{}个源", count)).await?;
+    }
     Ok(())
 }
 

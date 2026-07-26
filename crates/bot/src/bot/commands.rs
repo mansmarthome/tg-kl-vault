@@ -1,7 +1,7 @@
 use teloxide::utils::command::BotCommands;
 
-/// Bot commands registered by the Go version. Do not add `/check`; README
-/// mentioned it, but the Go source has no handler.
+/// Bot commands registered by the Go version plus `/check`, which appears in
+/// the legacy help text and forces the current chat's subscriptions due.
 #[derive(Debug, Clone, PartialEq, Eq, BotCommands)]
 #[command(rename_rule = "lowercase")]
 pub enum Command {
@@ -15,6 +15,8 @@ pub enum Command {
     List,
     #[command(description = "设置订阅")]
     Set,
+    #[command(description = "检查当前订阅")]
+    Check,
     #[command(description = "设置rss订阅标签")]
     Setfeedtag(String),
     #[command(description = "设置订阅刷新频率")]
@@ -43,6 +45,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("unsub", "退订RSS源"),
     ("list", "已订阅的RSS源"),
     ("set", "设置订阅"),
+    ("check", "检查当前订阅"),
     ("setfeedtag", "设置rss订阅标签"),
     ("setinterval", "设置订阅刷新频率"),
     ("unsuball", "取消所有订阅"),
@@ -60,7 +63,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_list_matches_overview_without_check() {
+    fn command_list_matches_overview() {
         let names = COMMANDS.iter().map(|(name, _)| *name).collect::<Vec<_>>();
         assert_eq!(
             names,
@@ -70,6 +73,7 @@ mod tests {
                 "unsub",
                 "list",
                 "set",
+                "check",
                 "setfeedtag",
                 "setinterval",
                 "unsuball",
@@ -82,6 +86,6 @@ mod tests {
                 "version",
             ]
         );
-        assert!(!names.contains(&"check"));
+        assert!(names.contains(&"check"));
     }
 }

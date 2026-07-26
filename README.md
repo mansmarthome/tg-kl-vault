@@ -22,6 +22,7 @@ A self-hostable Telegram RSS bot. This repository is a Rust rewrite of the origi
 /unsub [source_id]         退订RSS源
 /list                     已订阅的RSS源
 /set                      设置订阅
+/check                   检查当前订阅
 /setfeedtag [id] [tags]    设置rss订阅标签
 /setinterval [min] [ids]   设置订阅刷新频率
 /unsuball                 取消所有订阅
@@ -34,13 +35,13 @@ A self-hostable Telegram RSS bot. This repository is a Rust rewrite of the origi
 /version                  Bot 版本信息
 ```
 
-> Note: `/check` is mentioned in some legacy documentation, but the Go source did not have a handler for it, so the Rust rewrite does not add it.
+`/check` marks the current chat's subscribed sources due immediately. The scheduler will pick them up on its next pass and send only newly detected items.
 
 ## Current implementation notes
 
 Implemented:
 
-- Telegram command and callback dispatcher.
+- Telegram command and callback dispatcher, including `/check` for manual subscription refresh.
 - SQLite migrations and repository methods.
 - Feed fetch/parse/dedup pipeline.
 - OPML import/export.
