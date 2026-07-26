@@ -81,15 +81,24 @@ git clone https://github.com/siygle/flowerss-bot.git
 cd flowerss-bot
 ```
 
-### 3. Create configuration
+### 3. Configure by environment variables or config.toml
 
-Copy the example config:
+The bot can run with **environment variables only**. `config.toml` is optional and mainly useful for non-container installs. Defaults are built in for every key except `bot_token`, which is required unless `--dry-run` is used.
+
+Minimal environment-only setup:
+
+```bash
+export FLOWERSS_BOT_TOKEN="123456:telegram-bot-token"
+export FLOWERSS_SQLITE_PATH="/app/data/data.db"
+```
+
+Optional `config.toml` setup:
 
 ```bash
 cp config.example.toml config.toml
 ```
 
-Edit `config.toml`:
+Example `config.toml`:
 
 ```toml
 bot_token = "123456:telegram-bot-token"
@@ -171,36 +180,45 @@ Behavior details:
 
 ### 5. Environment variable overrides
 
-Every config value can be supplied through environment variables with the `FLOWERSS_` prefix. Useful examples:
+Every config value can be supplied through environment variables with the `FLOWERSS_` prefix. Environment variables override `config.toml` and also work when no config file is mounted.
 
-```bash
-FLOWERSS_BOT_TOKEN="123456:telegram-bot-token"
-FLOWERSS_SQLITE_PATH="/app/data/data.db"
-FLOWERSS_TELEGRAM_ENDPOINT="https://api.telegram.org"
-FLOWERSS_LOG_LEVEL="info"
-FLOWERSS_FETCH_CONCURRENCY="8"
-FLOWERSS_FETCH_RETENTION_DAYS="90"
-```
+| Env var | Config key | Example |
+|---|---|---|
+| `FLOWERSS_BOT_TOKEN` | `bot_token` | `123456:telegram-bot-token` |
+| `FLOWERSS_TELEGRAPH_TOKEN` | `telegraph_token` | `token1,token2` |
+| `FLOWERSS_TELEGRAPH_ACCOUNT` | `telegraph_account` | `flowerss-bot` |
+| `FLOWERSS_TELEGRAPH_AUTHOR_NAME` | `telegraph_author_name` | `flowerss-bot` |
+| `FLOWERSS_TELEGRAPH_AUTHOR_URL` | `telegraph_author_url` | `https://example.com` |
+| `FLOWERSS_SOCKS5` | `socks5` | `127.0.0.1:1080` |
+| `FLOWERSS_UPDATE_INTERVAL` | `update_interval` | `10` |
+| `FLOWERSS_USER_AGENT` | `user_agent` | `Mozilla/5.0 ...` |
+| `FLOWERSS_ALLOWED_USERS` | `allowed_users` | `123456,-100987654321` |
+| `FLOWERSS_PREVIEW_TEXT` | `preview_text` | `120` |
+| `FLOWERSS_DISABLE_WEB_PAGE_PREVIEW` | `disable_web_page_preview` | `false` |
+| `FLOWERSS_MESSAGE_MODE` | `message_mode` | `html` or `markdown` |
+| `FLOWERSS_SQLITE_PATH` | `sqlite.path` | `/app/data/data.db` |
+| `FLOWERSS_TELEGRAM_ENDPOINT` | `telegram.endpoint` | `https://api.telegram.org` |
+| `FLOWERSS_LOG_LEVEL` | `log.level` | `info` |
+| `FLOWERSS_FETCH_CONCURRENCY` | `fetch.concurrency` | `8` |
+| `FLOWERSS_FETCH_RETENTION_DAYS` | `fetch.retention_days` | `90` |
 
-Nested config mappings:
-
-- `FLOWERSS_SQLITE_PATH` -> `sqlite.path`
-- `FLOWERSS_TELEGRAM_ENDPOINT` -> `telegram.endpoint`
-- `FLOWERSS_LOG_LEVEL` -> `log.level`
-- `FLOWERSS_FETCH_CONCURRENCY` -> `fetch.concurrency`
-- `FLOWERSS_FETCH_RETENTION_DAYS` -> `fetch.retention_days`
+List values accept comma-separated values. Bracketed forms also work, for example `FLOWERSS_ALLOWED_USERS="[123,-100]"`.
 
 ### 6. Run with Docker Compose
 
-The included `docker-compose.yml` expects:
+The included `docker-compose.yml` is environment-first and only mounts `./data/` as `/app/data/`.
 
-- `./config.toml` mounted as `/app/config.toml`
-- `./data/` mounted as `/app/data/`
-
-Create the data directory:
+Create the data directory and `.env` file:
 
 ```bash
 mkdir -p data
+cat > .env <<'EOF'
+FLOWERSS_BOT_TOKEN=123456:telegram-bot-token
+# Optional overrides:
+# FLOWERSS_ALLOWED_USERS=123456,-100987654321
+# FLOWERSS_TELEGRAPH_TOKEN=token1,token2
+# FLOWERSS_LOG_LEVEL=info
+EOF
 ```
 
 Start the bot:
@@ -242,10 +260,10 @@ Run:
 docker run -d \
   --name flowerss-bot \
   --restart unless-stopped \
-  -v "$PWD/config.toml:/app/config.toml:ro" \
+  -e FLOWERSS_BOT_TOKEN="123456:telegram-bot-token" \
+  -e FLOWERSS_SQLITE_PATH="/app/data/data.db" \
   -v "$PWD/data:/app/data" \
-  flowerss-bot:latest \
-  -c /app/config.toml
+  flowerss-bot:latest
 ```
 
 Logs:
@@ -260,12 +278,19 @@ Install Rust, then:
 
 ```bash
 cargo build --release -p flowerss-bot
+FLOWERSS_BOT_TOKEN="123456:telegram-bot-token" \
+FLOWERSS_SQLITE_PATH="./data.db" \
+./target/release/flowerss-bot
+
+# Or with an optional config file:
 ./target/release/flowerss-bot -c config.toml
 ```
 
 Dry-run mode:
 
 ```bash
+cargo run -p flowerss-bot -- --dry-run
+# Or with an optional config file:
 cargo run -p flowerss-bot -- --dry-run -c config.toml
 ```
 
@@ -284,10 +309,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/flowerss-bot
-ExecStart=/opt/flowerss-bot/flowerss-bot -c /opt/flowerss-bot/config.toml
+ExecStart=/opt/flowerss-bot/flowerss-bot
 Restart=always
 RestartSec=5
-Environment=RUST_LOG=info
+Environment=FLOWERSS_BOT_TOKEN=123456:telegram-bot-token
+Environment=FLOWERSS_SQLITE_PATH=/opt/flowerss-bot/data.db
+Environment=FLOWERSS_LOG_LEVEL=info
 
 [Install]
 WantedBy=multi-user.target
@@ -324,12 +351,15 @@ Recommended migration flow:
 
    ```bash
    cargo run -p flowerss-bot -- --dry-run -c config.toml
+
+   # Or env-only:
+   FLOWERSS_SQLITE_PATH="./data.db" cargo run -p flowerss-bot -- --dry-run
    ```
 
    or inside Docker:
 
    ```bash
-   docker compose run --rm flowerss --dry-run -c /app/config.toml
+   docker compose run --rm flowerss --dry-run
    ```
 
 5. Start the Rust bot.

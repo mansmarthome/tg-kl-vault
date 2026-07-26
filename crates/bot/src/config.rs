@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::{env, path::Path};
 
 use figment::{
-    providers::{Env, Format, Serialized, Toml},
+    providers::{Format, Serialized, Toml},
     Figment,
 };
 use serde::{Deserialize, Serialize};
@@ -59,25 +59,87 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load(path: Option<&Path>) -> Result<Self, Box<figment::Error>> {
+    pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
         if let Some(path) = path {
             figment = figment.merge(Toml::file(path));
         }
-        // FLOWERSS_BOT_TOKEN -> bot_token; FLOWERSS_SQLITE_PATH -> sqlite.path.
-        let env = Env::prefixed("FLOWERSS_").map(|key| {
-            let key = key.as_str().to_ascii_lowercase();
-            match key.as_str() {
-                "sqlite_path" => "sqlite.path".into(),
-                "telegram_endpoint" => "telegram.endpoint".into(),
-                "log_level" => "log.level".into(),
-                "fetch_concurrency" => "fetch.concurrency".into(),
-                "fetch_retention_days" => "fetch.retention_days".into(),
-                _ => key.into(),
-            }
-        });
-        figment.merge(env).extract().map_err(Box::new)
+        let mut cfg: Self = figment.extract()?;
+        cfg.apply_env_overrides()?;
+        Ok(cfg)
     }
+
+    fn apply_env_overrides(&mut self) -> anyhow::Result<()> {
+        set_string(&mut self.bot_token, "FLOWERSS_BOT_TOKEN");
+        set_string_vec(&mut self.telegraph_token, "FLOWERSS_TELEGRAPH_TOKEN");
+        set_string(&mut self.telegraph_account, "FLOWERSS_TELEGRAPH_ACCOUNT");
+        set_string(&mut self.telegraph_author_name, "FLOWERSS_TELEGRAPH_AUTHOR_NAME");
+        set_string(&mut self.telegraph_author_url, "FLOWERSS_TELEGRAPH_AUTHOR_URL");
+        set_string(&mut self.socks5, "FLOWERSS_SOCKS5");
+        set_parse(&mut self.update_interval, "FLOWERSS_UPDATE_INTERVAL")?;
+        set_string(&mut self.user_agent, "FLOWERSS_USER_AGENT");
+        set_i64_vec(&mut self.allowed_users, "FLOWERSS_ALLOWED_USERS")?;
+        set_parse(&mut self.preview_text, "FLOWERSS_PREVIEW_TEXT")?;
+        set_parse(&mut self.disable_web_page_preview, "FLOWERSS_DISABLE_WEB_PAGE_PREVIEW")?;
+        set_parse(&mut self.message_mode, "FLOWERSS_MESSAGE_MODE")?;
+        set_string(&mut self.sqlite.path, "FLOWERSS_SQLITE_PATH");
+        set_string(&mut self.telegram.endpoint, "FLOWERSS_TELEGRAM_ENDPOINT");
+        set_string(&mut self.log.level, "FLOWERSS_LOG_LEVEL");
+        set_parse(&mut self.fetch.concurrency, "FLOWERSS_FETCH_CONCURRENCY")?;
+        set_parse(&mut self.fetch.retention_days, "FLOWERSS_FETCH_RETENTION_DAYS")?;
+        Ok(())
+    }
+}
+
+fn set_string(target: &mut String, key: &str) {
+    if let Ok(value) = env::var(key) {
+        *target = value;
+    }
+}
+
+fn set_parse<T>(target: &mut T, key: &str) -> anyhow::Result<()>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    if let Ok(value) = env::var(key) {
+        *target = value.parse().map_err(|err| anyhow::anyhow!("invalid {key}: {err}"))?;
+    }
+    Ok(())
+}
+
+fn set_string_vec(target: &mut Vec<String>, key: &str) {
+    if let Ok(value) = env::var(key) {
+        *target = parse_string_vec(&value);
+    }
+}
+
+fn set_i64_vec(target: &mut Vec<i64>, key: &str) -> anyhow::Result<()> {
+    if let Ok(value) = env::var(key) {
+        *target = parse_i64_vec(&value).map_err(|err| anyhow::anyhow!("invalid {key}: {err}"))?;
+    }
+    Ok(())
+}
+
+fn parse_string_vec(raw: &str) -> Vec<String> {
+    split_vec_tokens(raw).map(str::to_owned).collect()
+}
+
+fn parse_i64_vec(raw: &str) -> Result<Vec<i64>, std::num::ParseIntError> {
+    parse_vec_tokens(raw, str::parse)
+}
+
+fn parse_vec_tokens<T, E>(raw: &str, parse: impl Fn(&str) -> Result<T, E>) -> Result<Vec<T>, E> {
+    split_vec_tokens(raw).map(parse).collect()
+}
+
+fn split_vec_tokens(raw: &str) -> impl Iterator<Item = &str> {
+    raw.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|part| part.trim().trim_matches('"').trim_matches('\''))
+        .filter(|part| !part.is_empty())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +147,18 @@ impl Config {
 pub enum MessageMode {
     Html,
     Markdown,
+}
+
+impl std::str::FromStr for MessageMode {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "html" => Ok(Self::Html),
+            "markdown" => Ok(Self::Markdown),
+            _ => anyhow::bail!("expected html or markdown"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,6 +208,9 @@ impl Default for FetchConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn defaults_match_go_sample_and_sanctioned_deviations() {
@@ -145,5 +222,55 @@ mod tests {
         assert_eq!(ERROR_THRESHOLD, 100);
         assert_eq!(cfg.fetch.concurrency, 8);
         assert_eq!(cfg.fetch.retention_days, 90);
+    }
+
+    #[test]
+    fn env_overrides_cover_all_config_keys_without_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let keys = [
+            ("FLOWERSS_BOT_TOKEN", "bot-token"),
+            ("FLOWERSS_TELEGRAPH_TOKEN", "token-a,token-b"),
+            ("FLOWERSS_TELEGRAPH_ACCOUNT", "acct"),
+            ("FLOWERSS_TELEGRAPH_AUTHOR_NAME", "author"),
+            ("FLOWERSS_TELEGRAPH_AUTHOR_URL", "https://example.com/author"),
+            ("FLOWERSS_SOCKS5", "127.0.0.1:1080"),
+            ("FLOWERSS_UPDATE_INTERVAL", "15"),
+            ("FLOWERSS_USER_AGENT", "test-agent"),
+            ("FLOWERSS_ALLOWED_USERS", "42,-100"),
+            ("FLOWERSS_PREVIEW_TEXT", "120"),
+            ("FLOWERSS_DISABLE_WEB_PAGE_PREVIEW", "true"),
+            ("FLOWERSS_MESSAGE_MODE", "markdown"),
+            ("FLOWERSS_SQLITE_PATH", "/tmp/flowerss.db"),
+            ("FLOWERSS_TELEGRAM_ENDPOINT", "https://telegram.example"),
+            ("FLOWERSS_LOG_LEVEL", "debug"),
+            ("FLOWERSS_FETCH_CONCURRENCY", "3"),
+            ("FLOWERSS_FETCH_RETENTION_DAYS", "14"),
+        ];
+        for (key, value) in keys {
+            std::env::set_var(key, value);
+        }
+
+        let cfg = Config::load(None).unwrap();
+        assert_eq!(cfg.bot_token, "bot-token");
+        assert_eq!(cfg.telegraph_token, vec!["token-a", "token-b"]);
+        assert_eq!(cfg.telegraph_account, "acct");
+        assert_eq!(cfg.telegraph_author_name, "author");
+        assert_eq!(cfg.telegraph_author_url, "https://example.com/author");
+        assert_eq!(cfg.socks5, "127.0.0.1:1080");
+        assert_eq!(cfg.update_interval, 15);
+        assert_eq!(cfg.user_agent, "test-agent");
+        assert_eq!(cfg.allowed_users, vec![42, -100]);
+        assert_eq!(cfg.preview_text, 120);
+        assert!(cfg.disable_web_page_preview);
+        assert_eq!(cfg.message_mode, MessageMode::Markdown);
+        assert_eq!(cfg.sqlite.path, "/tmp/flowerss.db");
+        assert_eq!(cfg.telegram.endpoint, "https://telegram.example");
+        assert_eq!(cfg.log.level, "debug");
+        assert_eq!(cfg.fetch.concurrency, 3);
+        assert_eq!(cfg.fetch.retention_days, 14);
+
+        for (key, _) in keys {
+            std::env::remove_var(key);
+        }
     }
 }
