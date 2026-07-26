@@ -9,7 +9,7 @@ use flowerss_bot::{
     config::Config,
     db::{self, repo::Repo},
     feed::fetch::Fetcher,
-    preview::NoopPublisher,
+    preview::{NoopPublisher, TelegraphPublisher},
     scheduler::{Scheduler, SchedulerOptions},
 };
 use teloxide::Bot;
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let scheduler = Scheduler::new(
         repo.clone(),
         fetcher.clone(),
-        NoopPublisher,
+        TelegraphPublisher::new(&config.telegraph_token),
         TeloxideSender::new(bot.clone()),
         config.clone(),
         SchedulerOptions { dry_run: false, ..SchedulerOptions::default() },

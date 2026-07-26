@@ -49,10 +49,10 @@ Implemented:
 - Auto-unsubscribe on Telegram `Forbidden` errors.
 - Graceful shutdown on SIGINT/SIGTERM.
 - Retention pruning for old `contents` rows while keeping a dedup baseline.
+- Telegraph preview publishing through the local `telegraph` crate, including HTML-to-Telegraph node conversion, `createPage`, round-robin token selection, and `FLOOD_WAIT_n` cooldown handling.
 
 Not yet implemented / limitations:
 
-- Real Telegraph publisher integration. Telegraph config keys are present, but the current publisher is a no-op.
 - Legacy `@channel` mention preloading and full admin-check middleware are not complete yet; use private chats or send commands directly in the chat where the bot is installed.
 - Full production cut-over validation must still be done with your real bot token and production `data.db`.
 
@@ -135,9 +135,41 @@ Important fields:
 | `log.level` | Tracing log level, for example `error`, `warn`, `info`, `debug`, `trace`. |
 | `fetch.concurrency` | Number of feeds fetched concurrently. |
 | `fetch.retention_days` | Delete old content rows after this many days while keeping recent dedup baseline rows. |
-| `telegraph_*` | Reserved for Telegraph integration; currently no-op in this Rust rewrite. |
+| `telegraph_token` | Telegraph access token list. Empty disables Telegraph previews. Multiple tokens are used round-robin and tokens that hit `FLOOD_WAIT_n` are temporarily skipped. |
+| `telegraph_author_name` | Author name shown on created Telegraph pages. |
+| `telegraph_author_url` | Optional author URL shown on created Telegraph pages. |
 
-### 4. Environment variable overrides
+### 4. Telegraph preview setup
+
+Telegraph previews are optional. Leave `telegraph_token = []` to disable them.
+
+To enable Telegraph publishing, create one or more Telegraph accounts/tokens and put them in `config.toml`:
+
+```toml
+telegraph_token = ["token1", "token2"]
+telegraph_author_name = "flowerss-bot"
+telegraph_author_url = ""
+```
+
+One way to create a token is Telegraph's `createAccount` API:
+
+```bash
+curl -s https://api.telegra.ph/createAccount \
+  -d short_name="flowerss-bot" \
+  -d author_name="flowerss-bot"
+```
+
+Copy `result.access_token` from the response into `telegraph_token`.
+
+Behavior details:
+
+- Article HTML is converted to Telegraph nodes by the bundled `telegraph` crate.
+- Relative `href` / `src` values are resolved against the article link when possible.
+- Failed Telegraph publishing does not block Telegram delivery; the bot logs the error and sends the normal non-preview message.
+- Multiple tokens are used round-robin.
+- If Telegraph returns `FLOOD_WAIT_n`, that token is put on cooldown and the next available token is tried.
+
+### 5. Environment variable overrides
 
 Every config value can be supplied through environment variables with the `FLOWERSS_` prefix. Useful examples:
 
@@ -158,7 +190,7 @@ Nested config mappings:
 - `FLOWERSS_FETCH_CONCURRENCY` -> `fetch.concurrency`
 - `FLOWERSS_FETCH_RETENTION_DAYS` -> `fetch.retention_days`
 
-### 5. Run with Docker Compose
+### 6. Run with Docker Compose
 
 The included `docker-compose.yml` expects:
 
@@ -196,7 +228,7 @@ git pull
 docker compose up -d --build
 ```
 
-### 6. Run with Docker directly
+### 7. Run with Docker directly
 
 Build:
 
@@ -222,7 +254,7 @@ Logs:
 docker logs -f flowerss-bot
 ```
 
-### 7. Run from source
+### 8. Run from source
 
 Install Rust, then:
 
@@ -239,7 +271,7 @@ cargo run -p flowerss-bot -- --dry-run -c config.toml
 
 `--dry-run` loads config, opens SQLite, runs migrations, and exercises scheduler/fetch/dedup logic without Telegram sends.
 
-### 8. systemd service example
+### 9. systemd service example
 
 If you run the release binary directly:
 
@@ -270,7 +302,7 @@ sudo systemctl enable --now flowerss-bot
 sudo journalctl -u flowerss-bot -f
 ```
 
-### 9. Migrating from an existing Go deployment
+### 10. Migrating from an existing Go deployment
 
 The Rust rewrite is designed to open the original Go `data.db` directly.
 

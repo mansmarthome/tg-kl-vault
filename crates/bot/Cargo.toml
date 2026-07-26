@@ -20,6 +20,7 @@ teloxide = { version = "0.17.0", default-features = false, features = ["macros",
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+telegraph = { path = "../telegraph" }
 url.workspace = true
 
 [dev-dependencies]

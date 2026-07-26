@@ -817,6 +817,7 @@ dependencies = [
  "reqwest",
  "serde",
  "sqlx",
+ "telegraph",
  "teloxide",
  "tempfile",
  "tokio",

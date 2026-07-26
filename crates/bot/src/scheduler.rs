@@ -131,6 +131,7 @@ where
                                 author_name: Some(&self.config.telegraph_author_name),
                                 author_url: non_empty(&self.config.telegraph_author_url),
                                 html: item.content.as_deref().or(item.description.as_deref()).unwrap_or(""),
+                                base_url: Some(&item.link),
                             })
                             .await
                             .unwrap_or_else(|err| {
