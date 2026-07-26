@@ -1,6 +1,13 @@
 use anyhow::Context;
 use clap::Parser;
-use flowerss_bot::{cli::Args, config::Config};
+use flowerss_bot::{
+    cli::Args,
+    config::Config,
+    db::{self, repo::Repo},
+    feed::fetch::Fetcher,
+    preview::NoopPublisher,
+    scheduler::{Scheduler, SchedulerOptions},
+};
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -15,6 +22,21 @@ async fn main() -> anyhow::Result<()> {
         "config loaded: sqlite_path={} update_interval={} dry_run={}",
         config.sqlite.path, config.update_interval, args.dry_run
     );
+
+    if args.dry_run {
+        let pool = db::connect(&config.sqlite.path).await.context("connect sqlite")?;
+        let repo = Repo::new(pool);
+        let fetcher = Fetcher::new(&config).context("build feed fetcher")?;
+        let scheduler = Scheduler::new(
+            repo,
+            fetcher,
+            NoopPublisher,
+            config,
+            SchedulerOptions { dry_run: true, ..SchedulerOptions::default() },
+        );
+        scheduler.run_once().await.context("run dry-run scheduler pass")?;
+    }
+
     Ok(())
 }
 
