@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use teloxide::{prelude::*, types::{LinkPreviewOptions, ParseMode}};
 use tokio::sync::watch;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     bot::{
@@ -10,12 +10,15 @@ use crate::{
         commands::{Command, COMMANDS},
         documents::handle_document,
         keyboard::{feed_item_list_keyboard, unsuball_confirm_keyboard},
+        render::{render_html, render_markdown, MessageData},
+        sender::{MessageSender, SendOptions, TeloxideSender},
         subscribe::create_source,
     },
-    config::Config,
-    db::repo::Repo,
-    feed::fetch::Fetcher,
+    config::{Config, MessageMode},
+    db::{models::Content, repo::Repo},
+    feed::{fetch::{FetchOutcome, Fetcher}, hash::gen_hash_id, parse::parse_feed},
     opml::{export_opml, OpmlSource},
+    preview::{trim_description, PublishRequest, PreviewPublisher, TelegraphPublisher},
 };
 
 #[derive(Clone)]
@@ -247,12 +250,134 @@ async fn handle_set(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResul
 }
 
 async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
-    let count = state.repo.mark_user_sources_due(msg.chat.id.0).await.map_err(to_request_error)?;
-    if count == 0 {
+    let chat_id = msg.chat.id.0;
+    let sources = state.repo.subscriptions_for_user(chat_id).await.map_err(to_request_error)?;
+    if sources.is_empty() {
         bot.send_message(msg.chat.id, "当前没有订阅").await?;
-    } else {
-        bot.send_message(msg.chat.id, format!("已开始检查当前订阅，共{}个源", count)).await?;
+        return Ok(());
     }
+
+    state.repo.mark_user_sources_due(chat_id).await.map_err(to_request_error)?;
+    bot.send_message(msg.chat.id, format!("已开始检查当前订阅，共{}个源", sources.len())).await?;
+
+    let sender = TeloxideSender::new(bot.clone());
+    let publisher = TelegraphPublisher::new(&state.config.telegraph_token);
+    let mut new_count = 0usize;
+    let mut unchanged_count = 0usize;
+    let mut error_count = 0usize;
+    let now = now_unix();
+
+    for sub in sources {
+        let Some(source_id) = sub.source_id else { continue };
+        let source = match state.repo.get_source(source_id).await.map_err(to_request_error)? {
+            Some(source) => source,
+            None => continue,
+        };
+        let Some(link) = source.link.as_deref().filter(|s| !s.is_empty()) else { continue };
+
+        match state.fetcher.fetch(link, source.etag.as_deref(), source.last_modified.as_deref()).await {
+            Ok(FetchOutcome::Unchanged) => {
+                unchanged_count += 1;
+                state
+                    .repo
+                    .mark_source_success(source.id, None, None, next_fetch_at(now, state.config.update_interval))
+                    .await
+                    .map_err(to_request_error)?;
+            }
+            Ok(FetchOutcome::Modified(feed)) => {
+                let parsed = match parse_feed(&feed.body) {
+                    Ok(parsed) => parsed,
+                    Err(err) => {
+                        warn!(source_id, error = %err, "manual check parse failed");
+                        error_count += 1;
+                        continue;
+                    }
+                };
+                let hashes = parsed.items.iter().map(|item| gen_hash_id(link, &item.guid)).collect::<Vec<_>>();
+                let existing = state.repo.existing_hash_ids(source.id, &hashes).await.map_err(to_request_error)?;
+
+                for (item, hash_id) in parsed.items.iter().zip(hashes) {
+                    if existing.contains(&hash_id) {
+                        continue;
+                    }
+
+                    let telegraph_url = publisher
+                        .publish(&PublishRequest {
+                            title: &item.title,
+                            author_name: Some(&state.config.telegraph_author_name),
+                            author_url: non_empty(&state.config.telegraph_author_url),
+                            html: item.content.as_deref().or(item.description.as_deref()).unwrap_or(""),
+                            base_url: Some(&item.link),
+                        })
+                        .await
+                        .unwrap_or_else(|err| {
+                            warn!(source_id, %hash_id, error = %err, "manual check telegraph publish failed");
+                            None
+                        });
+
+                    state
+                        .repo
+                        .insert_content(&Content {
+                            source_id: Some(source.id),
+                            hash_id: hash_id.clone(),
+                            raw_id: Some(item.guid.clone()),
+                            raw_link: Some(item.link.clone()),
+                            title: Some(item.title.clone()),
+                            telegraph_url: telegraph_url.clone(),
+                            created_at: None,
+                            updated_at: None,
+                        })
+                        .await
+                        .map_err(to_request_error)?;
+
+                    let preview_text = trim_description(item.description.as_deref().unwrap_or(""), state.config.preview_text);
+                    let enable_telegraph = sub.enable_telegraph == Some(1) && telegraph_url.is_some();
+                    let data = MessageData {
+                        source_title: source.title.as_deref().unwrap_or(""),
+                        content_title: &item.title,
+                        raw_link: &item.link,
+                        preview_text: &preview_text,
+                        telegraph_url: telegraph_url.as_deref().unwrap_or(""),
+                        tags: sub.tag.as_deref().unwrap_or(""),
+                        enable_telegraph,
+                    };
+                    let text = match state.config.message_mode {
+                        MessageMode::Html => render_html(&data),
+                        MessageMode::Markdown => render_markdown(&data),
+                    };
+                    let _ = sender
+                        .send_text(
+                            chat_id,
+                            &text,
+                            SendOptions {
+                                disable_web_page_preview: state.config.disable_web_page_preview,
+                                disable_notification: sub.enable_notification != Some(1),
+                                parse_mode: state.config.message_mode,
+                            },
+                        )
+                        .await;
+                    new_count += 1;
+                }
+
+                state
+                    .repo
+                    .mark_source_success(source.id, feed.etag.as_deref(), feed.last_modified.as_deref(), next_fetch_at(now, state.config.update_interval))
+                    .await
+                    .map_err(to_request_error)?;
+            }
+            Err(err) => {
+                warn!(source_id, error = %err, "manual check fetch failed");
+                error_count += 1;
+                state.repo.mark_source_error(source.id, now + 60).await.map_err(to_request_error)?;
+            }
+        }
+    }
+
+    bot.send_message(
+        msg.chat.id,
+        format!("检查完成：新增{}篇，{}个源无更新，{}个源失败", new_count, unchanged_count, error_count),
+    )
+    .await?;
     Ok(())
 }
 
@@ -342,6 +467,14 @@ pub(crate) fn no_preview() -> LinkPreviewOptions {
 fn now_unix() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+}
+
+fn next_fetch_at(now: i64, interval_minutes: u64) -> i64 {
+    now + interval_minutes.max(1) as i64 * 60
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
 }
 
 pub(crate) fn to_request_error(err: impl std::error::Error + Send + Sync + 'static) -> teloxide::RequestError {

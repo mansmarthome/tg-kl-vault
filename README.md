@@ -35,7 +35,7 @@ A self-hostable Telegram RSS bot. This repository is a Rust rewrite of the origi
 /version                  Bot 版本信息
 ```
 
-`/check` marks the current chat's subscribed sources due immediately. The scheduler will pick them up on its next pass and send only newly detected items.
+`/check` immediately fetches the current chat's subscribed sources, sends newly detected items, and finishes with a summary such as `检查完成：新增0篇，67个源无更新，0个源失败`.
 
 ## Current implementation notes
 
