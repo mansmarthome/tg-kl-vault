@@ -53,27 +53,56 @@ async fn main() -> anyhow::Result<()> {
 
     let scheduler = Scheduler::new(
         repo.clone(),
-        fetcher,
+        fetcher.clone(),
         NoopPublisher,
         TeloxideSender::new(bot.clone()),
         config.clone(),
         SchedulerOptions { dry_run: false, ..SchedulerOptions::default() },
     );
 
+    // Sanctioned deviation D7: stop polling and finish in-flight sends on
+    // SIGINT/SIGTERM instead of the Go original's immediate `os.Exit(0)`.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let shutdown_task = tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+    let signal_task = tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        info!("shutdown signal received, stopping scheduler and bot");
         let _ = shutdown_tx.send(true);
     });
 
-    let bot_task = tokio::spawn(async move { run_bot(bot, config, repo).await });
+    let scheduler_rx = shutdown_rx.clone();
+    let scheduler_task = tokio::spawn(async move { scheduler.run_until_shutdown(scheduler_rx).await });
+
+    let bot_rx = shutdown_rx.clone();
+    let bot_task = tokio::spawn(async move { run_bot(bot, config, repo, fetcher, bot_rx).await });
+
+    let (scheduler_result, bot_result) = tokio::try_join!(scheduler_task, bot_task).context("join tasks")?;
+    scheduler_result.context("run scheduler")?;
+    bot_result.context("run bot")?;
+    signal_task.abort();
+    Ok(())
+}
+
+async fn wait_for_shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        result = scheduler.run_until_shutdown(shutdown_rx) => result.context("run scheduler")?,
-        result = bot_task => result.context("join bot task")??,
+        () = ctrl_c => {},
+        () = terminate => {},
     }
-    shutdown_task.abort();
-    Ok(())
 }
 
 fn init_tracing(level: &str) -> anyhow::Result<()> {

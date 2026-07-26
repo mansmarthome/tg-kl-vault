@@ -254,6 +254,161 @@ mod tests {
         bot::sender::test_support::RecordingSender,
         db,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
+
+    /// Records `tracing` events whose `message` field equals "would send",
+    /// standing in for the log-scraping step of the manual `--dry-run`
+    /// verification procedure in `docs/02-bot-rewrite.md` §7 (this sandbox
+    /// has no real production `data.db` to point the binary at).
+    struct WouldSendCounter(std::sync::Arc<AtomicUsize>);
+
+    struct MessageVisitor(Option<String>);
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for WouldSendCounter {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = MessageVisitor(None);
+            event.record(&mut visitor);
+            if visitor.0.as_deref() == Some("would send") {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// Serves one fixed-response HTTP request and then closes, avoiding a
+    /// new dev-dependency just to stand up a feed for the dry-run gate test.
+    async fn spawn_single_response_server(body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 || buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/rss+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        format!("http://{addr}/feed")
+    }
+
+    #[tokio::test]
+    async fn dry_run_against_preexisting_content_reannounces_nothing() {
+        const FEED_BODY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Existing Feed</title>
+<item><guid>post-42</guid><title>Existing Post</title><link>https://example.com/post-42</link><description>d</description></item>
+</channel></rss>"#;
+
+        let source_link = spawn_single_response_server(FEED_BODY).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::connect(dir.path().join("data.db").to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+        let source_id = repo.insert_source(&source_link, "Existing Feed").await.unwrap();
+
+        // Simulate a production `data.db` that already ingested this article
+        // on a prior run, using the exact same hash function the scheduler
+        // uses (the whole point of the gate: if this were wrong, the item
+        // below would look "new" and get re-announced).
+        let hash_id = gen_hash_id(&source_link, "post-42");
+        repo.insert_content(&Content {
+            source_id: Some(source_id),
+            hash_id: hash_id.clone(),
+            raw_id: Some("post-42".to_owned()),
+            raw_link: Some("https://example.com/post-42".to_owned()),
+            title: Some("Existing Post".to_owned()),
+            telegraph_url: None,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        let config = Config::default();
+        let fetcher = Fetcher::new(&config).unwrap();
+        let scheduler = Scheduler::new(
+            repo.clone(),
+            fetcher,
+            crate::preview::NoopPublisher,
+            crate::bot::sender::NoopSender,
+            config,
+            SchedulerOptions { dry_run: true, ..SchedulerOptions::default() },
+        );
+
+        let would_send_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let subscriber = WouldSendCounter(would_send_count.clone());
+        // `#[tokio::test]` defaults to the current-thread runtime, so this
+        // thread-local guard stays valid across the `.await` below.
+        let _guard = tracing::subscriber::set_default(subscriber);
+        scheduler.run_once().await.unwrap();
+        drop(_guard);
+
+        assert_eq!(would_send_count.load(Ordering::SeqCst), 0, "pre-existing article must not be re-announced");
+    }
+
+    /// Companion to the gate above: with no pre-existing content row for the
+    /// same feed, the identical item must be flagged. Without this, a broken
+    /// hash/dedup check could silently make every article look "already
+    /// seen" and the zero-count assertion above would pass for the wrong
+    /// reason.
+    #[tokio::test]
+    async fn dry_run_flags_genuinely_new_items() {
+        const FEED_BODY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>New Feed</title>
+<item><guid>post-1</guid><title>Brand New Post</title><link>https://example.com/post-1</link><description>d</description></item>
+</channel></rss>"#;
+
+        let source_link = spawn_single_response_server(FEED_BODY).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::connect(dir.path().join("data.db").to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+        repo.insert_source(&source_link, "New Feed").await.unwrap();
+
+        let config = Config::default();
+        let fetcher = Fetcher::new(&config).unwrap();
+        let scheduler = Scheduler::new(
+            repo,
+            fetcher,
+            crate::preview::NoopPublisher,
+            crate::bot::sender::NoopSender,
+            config,
+            SchedulerOptions { dry_run: true, ..SchedulerOptions::default() },
+        );
+
+        let would_send_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let subscriber = WouldSendCounter(would_send_count.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        scheduler.run_once().await.unwrap();
+        drop(_guard);
+
+        assert_eq!(would_send_count.load(Ordering::SeqCst), 1, "genuinely new article must be flagged");
+    }
 
     #[test]
     fn next_fetch_at_uses_at_least_one_minute() {

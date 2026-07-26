@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 
 use super::models::{Content, Source, Subscribe, User};
+use crate::config::ERROR_THRESHOLD;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct SubscriptionSource {
@@ -55,6 +56,16 @@ impl Repo {
              FROM sources ORDER BY id",
         )
         .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn get_source(&self, id: i64) -> sqlx::Result<Option<Source>> {
+        sqlx::query_as::<_, Source>(
+            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
+             FROM sources WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
         .await
     }
 
@@ -121,21 +132,58 @@ impl Repo {
         .await
     }
 
+    /// Port of Go's `Core.Unsubscribe`: removes the subscription, then removes
+    /// the source (and its dedup content ledger) once it has no subscribers
+    /// left, matching `removeSource`.
     pub async fn unsubscribe_user(&self, user_id: i64, source_id: i64) -> sqlx::Result<bool> {
         let result = sqlx::query("DELETE FROM subscribes WHERE user_id = ? AND source_id = ?")
             .bind(user_id)
             .bind(source_id)
             .execute(&self.pool)
             .await?;
-        Ok(result.rows_affected() > 0)
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        if self.count_source_subscriptions(source_id).await? == 0 {
+            self.delete_source_and_contents(source_id).await?;
+        }
+        Ok(true)
     }
 
+    /// Port of Go's `Core.UnsubscribeAllSource`: same per-source cascade as
+    /// `unsubscribe_user`, applied to every source the user is subscribed to.
     pub async fn unsubscribe_all_user(&self, user_id: i64) -> sqlx::Result<u64> {
+        let source_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT source_id FROM subscribes WHERE user_id = ? AND source_id IS NOT NULL",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
         let result = sqlx::query("DELETE FROM subscribes WHERE user_id = ?")
             .bind(user_id)
             .execute(&self.pool)
             .await?;
+
+        for source_id in source_ids {
+            if self.count_source_subscriptions(source_id).await? == 0 {
+                self.delete_source_and_contents(source_id).await?;
+            }
+        }
         Ok(result.rows_affected())
+    }
+
+    pub async fn count_source_subscriptions(&self, source_id: i64) -> sqlx::Result<i64> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM subscribes WHERE source_id = ?")
+            .bind(source_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn delete_source_and_contents(&self, source_id: i64) -> sqlx::Result<()> {
+        sqlx::query("DELETE FROM contents WHERE source_id = ?").bind(source_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM sources WHERE id = ?").bind(source_id).execute(&self.pool).await?;
+        Ok(())
     }
 
     pub async fn subscriptions_for_user(&self, user_id: i64) -> sqlx::Result<Vec<SubscriptionSource>> {
@@ -175,15 +223,67 @@ impl Repo {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn set_all_enabled(&self, user_id: i64, enabled: bool) -> sqlx::Result<u64> {
-        let result = sqlx::query(
-            "UPDATE subscribes SET wait_time = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+    pub async fn toggle_subscription_notice(&self, user_id: i64, source_id: i64) -> sqlx::Result<Option<Subscribe>> {
+        let Some(sub) = self.subscription(user_id, source_id).await? else { return Ok(None) };
+        let new_value = if sub.enable_notification == Some(1) { 0 } else { 1 };
+        sqlx::query(
+            "UPDATE subscribes SET enable_notification = ?, updated_at = CURRENT_TIMESTAMP \
+             WHERE user_id = ? AND source_id = ?",
         )
-        .bind(if enabled { 0 } else { 1 })
+        .bind(new_value)
         .bind(user_id)
+        .bind(source_id)
         .execute(&self.pool)
         .await?;
-        Ok(result.rows_affected())
+        self.subscription(user_id, source_id).await
+    }
+
+    pub async fn toggle_subscription_telegraph(&self, user_id: i64, source_id: i64) -> sqlx::Result<Option<Subscribe>> {
+        let Some(sub) = self.subscription(user_id, source_id).await? else { return Ok(None) };
+        let new_value = if sub.enable_telegraph == Some(1) { 0 } else { 1 };
+        sqlx::query(
+            "UPDATE subscribes SET enable_telegraph = ?, updated_at = CURRENT_TIMESTAMP \
+             WHERE user_id = ? AND source_id = ?",
+        )
+        .bind(new_value)
+        .bind(user_id)
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+        self.subscription(user_id, source_id).await
+    }
+
+    /// Port of Go's `Core.EnableSourceUpdate` / `ClearSourceErrorCount`: this
+    /// pauses/resumes the *source* for all its subscribers (not a per-user
+    /// flag), by clearing its `error_count` below `ERROR_THRESHOLD`.
+    pub async fn enable_source_update(&self, source_id: i64) -> sqlx::Result<()> {
+        sqlx::query("UPDATE sources SET error_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(source_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Port of Go's `Core.DisableSourceUpdate`: sets `error_count` one past
+    /// `ERROR_THRESHOLD` so the scheduler's `sources_due` query skips it.
+    pub async fn disable_source_update(&self, source_id: i64) -> sqlx::Result<()> {
+        sqlx::query("UPDATE sources SET error_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(i64::from(ERROR_THRESHOLD) + 1)
+            .bind(source_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Port of Go's `Core.ToggleSourceUpdateStatus`.
+    pub async fn toggle_source_update_status(&self, source_id: i64) -> sqlx::Result<Option<Source>> {
+        let Some(source) = self.get_source(source_id).await? else { return Ok(None) };
+        if source.error_count.unwrap_or(0) < i64::from(ERROR_THRESHOLD) {
+            self.disable_source_update(source_id).await?;
+        } else {
+            self.enable_source_update(source_id).await?;
+        }
+        self.get_source(source_id).await
     }
 
     pub async fn subscribes_for_source(&self, source_id: i64) -> sqlx::Result<Vec<Subscribe>> {
@@ -367,9 +467,84 @@ mod tests {
         assert_eq!(repo.subscriptions_for_user(42).await.unwrap().len(), 1);
         assert!(repo.set_subscription_tag(42, source_id, "#tag").await.unwrap());
         assert!(repo.set_subscription_interval(42, source_id, 30).await.unwrap());
-        assert_eq!(repo.set_all_enabled(42, false).await.unwrap(), 1);
         assert!(repo.unsubscribe_user(42, source_id).await.unwrap());
         assert!(!repo.unsubscribe_user(42, source_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_cascades_to_orphan_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+
+        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        repo.subscribe_user(1, source_id).await.unwrap();
+        repo.subscribe_user(2, source_id).await.unwrap();
+        repo.insert_content(&Content {
+            source_id: Some(source_id),
+            hash_id: "h1".to_owned(),
+            raw_id: None,
+            raw_link: None,
+            title: None,
+            telegraph_url: None,
+            created_at: None,
+            updated_at: None,
+        })
+        .await
+        .unwrap();
+
+        // Still has a subscriber left: source and its contents survive.
+        assert!(repo.unsubscribe_user(1, source_id).await.unwrap());
+        assert!(repo.get_source(source_id).await.unwrap().is_some());
+
+        // Last subscriber leaves: source and its dedup ledger are removed.
+        assert!(repo.unsubscribe_user(2, source_id).await.unwrap());
+        assert!(repo.get_source(source_id).await.unwrap().is_none());
+        assert!(repo.existing_hash_ids(source_id, &["h1".to_owned()]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_update_toggle_matches_error_threshold_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+
+        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        assert_eq!(repo.get_source(source_id).await.unwrap().unwrap().error_count, Some(0));
+
+        let paused = repo.toggle_source_update_status(source_id).await.unwrap().unwrap();
+        assert_eq!(paused.error_count, Some(101));
+
+        let resumed = repo.toggle_source_update_status(source_id).await.unwrap().unwrap();
+        assert_eq!(resumed.error_count, Some(0));
+
+        repo.disable_source_update(source_id).await.unwrap();
+        assert_eq!(repo.get_source(source_id).await.unwrap().unwrap().error_count, Some(101));
+        repo.enable_source_update(source_id).await.unwrap();
+        assert_eq!(repo.get_source(source_id).await.unwrap().unwrap().error_count, Some(0));
+    }
+
+    #[tokio::test]
+    async fn subscription_notice_and_telegraph_toggle() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+
+        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        repo.subscribe_user(42, source_id).await.unwrap();
+
+        let sub = repo.toggle_subscription_notice(42, source_id).await.unwrap().unwrap();
+        assert_eq!(sub.enable_notification, Some(0));
+        let sub = repo.toggle_subscription_notice(42, source_id).await.unwrap().unwrap();
+        assert_eq!(sub.enable_notification, Some(1));
+
+        let sub = repo.toggle_subscription_telegraph(42, source_id).await.unwrap().unwrap();
+        assert_eq!(sub.enable_telegraph, Some(0));
+        let sub = repo.toggle_subscription_telegraph(42, source_id).await.unwrap().unwrap();
+        assert_eq!(sub.enable_telegraph, Some(1));
     }
 
     #[tokio::test]

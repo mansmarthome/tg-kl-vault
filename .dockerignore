@@ -1,0 +1,9 @@
+target
+.git
+data.db
+data.db-shm
+data.db-wal
+data.dryrun.db
+data.dryrun.db-shm
+data.dryrun.db-wal
+config.yml

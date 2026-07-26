@@ -59,22 +59,36 @@ impl MessageSender for TeloxideSender {
             MessageMode::Html => teloxide::types::ParseMode::Html,
             MessageMode::Markdown => teloxide::types::ParseMode::MarkdownV2,
         };
-        let mut request = self
-            .bot
-            .send_message(ChatId(chat_id), text)
-            .parse_mode(parse_mode)
-            .disable_notification(options.disable_notification);
-        if options.disable_web_page_preview {
-            request = request.link_preview_options(LinkPreviewOptions {
-                is_disabled: true,
-                url: None,
-                prefer_small_media: false,
-                prefer_large_media: false,
-                show_above_text: false,
-            });
-        }
+        let send = || {
+            let mut request = self
+                .bot
+                .send_message(ChatId(chat_id), text)
+                .parse_mode(parse_mode)
+                .disable_notification(options.disable_notification);
+            if options.disable_web_page_preview {
+                request = request.link_preview_options(LinkPreviewOptions {
+                    is_disabled: true,
+                    url: None,
+                    prefer_small_media: false,
+                    prefer_large_media: false,
+                    show_above_text: false,
+                });
+            }
+            request
+        };
 
-        match request.await {
+        // Sanctioned deviation D6: on a 429, sleep for Telegram's requested
+        // `retry_after` and retry exactly once, then give up and log.
+        let result = match send().await {
+            Err(teloxide::RequestError::RetryAfter(seconds)) => {
+                warn!(chat_id, retry_after_secs = seconds.seconds(), "send hit 429, retrying once");
+                tokio::time::sleep(seconds.duration()).await;
+                send().await
+            }
+            other => other,
+        };
+
+        match result {
             Ok(_) => Ok(SendOutcome::Sent),
             Err(err) => {
                 let message = err.to_string();

@@ -42,7 +42,11 @@ struct Outline {
 }
 
 pub fn export_opml(sources: &[OpmlSource]) -> anyhow::Result<String> {
-    export_opml_with_date(sources, Utc::now().to_rfc2822())
+    // 00-OVERVIEW.md §5 calls for Go's `time.RFC1123` layout
+    // ("Mon, 02 Jan 2006 15:04:05 MST"), not RFC2822's numeric offset. Go's
+    // `time.Now()` uses the server's local zone; we standardize on UTC/"GMT"
+    // since that's what "server-local" resolves to inside the Docker image.
+    export_opml_with_date(sources, Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string())
 }
 
 fn export_opml_with_date(sources: &[OpmlSource], date_created: String) -> anyhow::Result<String> {
