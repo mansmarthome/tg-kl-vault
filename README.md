@@ -24,7 +24,7 @@ This repository is a Rust rewrite derived from the original [`indes/flowerss-bot
 /unsub [source_id]         退订RSS源
 /list                     已订阅的RSS源
 /set                      设置订阅
-/settings                 设置（OPML 导入/导出、更新频率、语言）
+/settings                 設定（多層按鈕：OPML、更新頻率、語系）
 /check                    检查当前订阅
 /setfeedtag [id] [tags]    设置rss订阅标签
 /unsuball                 取消所有订阅
@@ -41,10 +41,10 @@ This repository is a Rust rewrite derived from the original [`indes/flowerss-bot
 
 Implemented:
 
-- Telegram command and callback dispatcher, including `/check` for manual subscription refresh and `/settings` for OPML, interval, and language actions.
+- Telegram command and callback dispatcher, including `/check` for manual subscription refresh and `/settings` with nested OPML, refresh interval, and language buttons.
 - SQLite migrations and repository methods.
 - Feed fetch/parse/dedup pipeline.
-- OPML import/export.
+- OPML import/export through `/settings` buttons.
 - Message rendering and Telegram sending pipeline.
 - 429 retry handling with Telegram `retry_after`.
 - Telegram `Forbidden` send failures are logged without deleting subscriptions.
@@ -54,6 +54,7 @@ Implemented:
 
 Not yet implemented / limitations:
 
+- Legacy Go source files have been removed from this repo; use the upstream project link above for Go implementation reference.
 - Legacy `@channel` mention preloading and full admin-check middleware are not complete yet; use private chats or send commands directly in the chat where the bot is installed.
 - Full production cut-over validation must still be done with your real bot token and production `data.db`.
 

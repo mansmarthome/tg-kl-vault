@@ -121,7 +121,11 @@ impl Repo {
         Ok(true)
     }
 
-    pub async fn subscription(&self, user_id: i64, source_id: i64) -> sqlx::Result<Option<Subscribe>> {
+    pub async fn subscription(
+        &self,
+        user_id: i64,
+        source_id: i64,
+    ) -> sqlx::Result<Option<Subscribe>> {
         sqlx::query_as::<_, Subscribe>(
             "SELECT id, user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at \
              FROM subscribes WHERE user_id = ? AND source_id = ? LIMIT 1",
@@ -181,12 +185,21 @@ impl Repo {
     }
 
     pub async fn delete_source_and_contents(&self, source_id: i64) -> sqlx::Result<()> {
-        sqlx::query("DELETE FROM contents WHERE source_id = ?").bind(source_id).execute(&self.pool).await?;
-        sqlx::query("DELETE FROM sources WHERE id = ?").bind(source_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM contents WHERE source_id = ?")
+            .bind(source_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM sources WHERE id = ?")
+            .bind(source_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
-    pub async fn subscriptions_for_user(&self, user_id: i64) -> sqlx::Result<Vec<SubscriptionSource>> {
+    pub async fn subscriptions_for_user(
+        &self,
+        user_id: i64,
+    ) -> sqlx::Result<Vec<SubscriptionSource>> {
         sqlx::query_as::<_, SubscriptionSource>(
             "SELECT subscribes.id AS subscribe_id, subscribes.user_id, subscribes.source_id, \
                     subscribes.enable_notification, subscribes.enable_telegraph, subscribes.tag, \
@@ -230,7 +243,12 @@ impl Repo {
         Ok(())
     }
 
-    pub async fn set_subscription_tag(&self, user_id: i64, source_id: i64, tag: &str) -> sqlx::Result<bool> {
+    pub async fn set_subscription_tag(
+        &self,
+        user_id: i64,
+        source_id: i64,
+        tag: &str,
+    ) -> sqlx::Result<bool> {
         let result = sqlx::query(
             "UPDATE subscribes SET tag = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
         )
@@ -242,7 +260,12 @@ impl Repo {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn set_subscription_interval(&self, user_id: i64, source_id: i64, interval: i64) -> sqlx::Result<bool> {
+    pub async fn set_subscription_interval(
+        &self,
+        user_id: i64,
+        source_id: i64,
+        interval: i64,
+    ) -> sqlx::Result<bool> {
         let result = sqlx::query(
             "UPDATE subscribes SET interval = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
         )
@@ -254,9 +277,34 @@ impl Repo {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn toggle_subscription_notice(&self, user_id: i64, source_id: i64) -> sqlx::Result<Option<Subscribe>> {
-        let Some(sub) = self.subscription(user_id, source_id).await? else { return Ok(None) };
-        let new_value = if sub.enable_notification == Some(1) { 0 } else { 1 };
+    pub async fn set_all_subscription_interval(
+        &self,
+        user_id: i64,
+        interval: i64,
+    ) -> sqlx::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE subscribes SET interval = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+        )
+        .bind(interval)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn toggle_subscription_notice(
+        &self,
+        user_id: i64,
+        source_id: i64,
+    ) -> sqlx::Result<Option<Subscribe>> {
+        let Some(sub) = self.subscription(user_id, source_id).await? else {
+            return Ok(None);
+        };
+        let new_value = if sub.enable_notification == Some(1) {
+            0
+        } else {
+            1
+        };
         sqlx::query(
             "UPDATE subscribes SET enable_notification = ?, updated_at = CURRENT_TIMESTAMP \
              WHERE user_id = ? AND source_id = ?",
@@ -269,9 +317,19 @@ impl Repo {
         self.subscription(user_id, source_id).await
     }
 
-    pub async fn toggle_subscription_telegraph(&self, user_id: i64, source_id: i64) -> sqlx::Result<Option<Subscribe>> {
-        let Some(sub) = self.subscription(user_id, source_id).await? else { return Ok(None) };
-        let new_value = if sub.enable_telegraph == Some(1) { 0 } else { 1 };
+    pub async fn toggle_subscription_telegraph(
+        &self,
+        user_id: i64,
+        source_id: i64,
+    ) -> sqlx::Result<Option<Subscribe>> {
+        let Some(sub) = self.subscription(user_id, source_id).await? else {
+            return Ok(None);
+        };
+        let new_value = if sub.enable_telegraph == Some(1) {
+            0
+        } else {
+            1
+        };
         sqlx::query(
             "UPDATE subscribes SET enable_telegraph = ?, updated_at = CURRENT_TIMESTAMP \
              WHERE user_id = ? AND source_id = ?",
@@ -288,27 +346,36 @@ impl Repo {
     /// pauses/resumes the *source* for all its subscribers (not a per-user
     /// flag), by clearing its `error_count` below `ERROR_THRESHOLD`.
     pub async fn enable_source_update(&self, source_id: i64) -> sqlx::Result<()> {
-        sqlx::query("UPDATE sources SET error_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(source_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE sources SET error_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     /// Port of Go's `Core.DisableSourceUpdate`: sets `error_count` one past
     /// `ERROR_THRESHOLD` so the scheduler's `sources_due` query skips it.
     pub async fn disable_source_update(&self, source_id: i64) -> sqlx::Result<()> {
-        sqlx::query("UPDATE sources SET error_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(i64::from(ERROR_THRESHOLD) + 1)
-            .bind(source_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE sources SET error_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(i64::from(ERROR_THRESHOLD) + 1)
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     /// Port of Go's `Core.ToggleSourceUpdateStatus`.
-    pub async fn toggle_source_update_status(&self, source_id: i64) -> sqlx::Result<Option<Source>> {
-        let Some(source) = self.get_source(source_id).await? else { return Ok(None) };
+    pub async fn toggle_source_update_status(
+        &self,
+        source_id: i64,
+    ) -> sqlx::Result<Option<Source>> {
+        let Some(source) = self.get_source(source_id).await? else {
+            return Ok(None);
+        };
         if source.error_count.unwrap_or(0) < i64::from(ERROR_THRESHOLD) {
             self.disable_source_update(source_id).await?;
         } else {
@@ -345,7 +412,12 @@ impl Repo {
                 separated.push_bind(hash);
             }
             separated.push_unseparated(")");
-            found.extend(builder.build_query_scalar::<String>().fetch_all(&self.pool).await?);
+            found.extend(
+                builder
+                    .build_query_scalar::<String>()
+                    .fetch_all(&self.pool)
+                    .await?,
+            );
         }
         Ok(found)
     }
@@ -479,9 +551,19 @@ mod tests {
         repo.ensure_user(-100).await.unwrap();
         assert_eq!(repo.get_user(-100).await.unwrap().unwrap().id, -100);
 
-        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        let source_id = repo
+            .insert_source("https://example.com/feed", "Example")
+            .await
+            .unwrap();
         assert_eq!(source_id, 1);
-        assert_eq!(repo.source_by_link("https://example.com/feed").await.unwrap().unwrap().id, 1);
+        assert_eq!(
+            repo.source_by_link("https://example.com/feed")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            1
+        );
         assert_eq!(repo.list_sources().await.unwrap().len(), 1);
     }
 
@@ -492,12 +574,21 @@ mod tests {
         let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
         let repo = Repo::new(pool);
 
-        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        let source_id = repo
+            .insert_source("https://example.com/feed", "Example")
+            .await
+            .unwrap();
         assert!(repo.subscribe_user(42, source_id).await.unwrap());
         assert!(!repo.subscribe_user(42, source_id).await.unwrap());
         assert_eq!(repo.subscriptions_for_user(42).await.unwrap().len(), 1);
-        assert!(repo.set_subscription_tag(42, source_id, "#tag").await.unwrap());
-        assert!(repo.set_subscription_interval(42, source_id, 30).await.unwrap());
+        assert!(repo
+            .set_subscription_tag(42, source_id, "#tag")
+            .await
+            .unwrap());
+        assert!(repo
+            .set_subscription_interval(42, source_id, 30)
+            .await
+            .unwrap());
         assert!(repo.unsubscribe_user(42, source_id).await.unwrap());
         assert!(!repo.unsubscribe_user(42, source_id).await.unwrap());
     }
@@ -509,7 +600,10 @@ mod tests {
         let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
         let repo = Repo::new(pool.clone());
 
-        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        let source_id = repo
+            .insert_source("https://example.com/feed", "Example")
+            .await
+            .unwrap();
         repo.subscribe_user(42, source_id).await.unwrap();
         sqlx::query("UPDATE sources SET next_fetch_at = 999999, error_count = 101 WHERE id = ?")
             .bind(source_id)
@@ -530,7 +624,10 @@ mod tests {
         let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
         let repo = Repo::new(pool);
 
-        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        let source_id = repo
+            .insert_source("https://example.com/feed", "Example")
+            .await
+            .unwrap();
         repo.subscribe_user(1, source_id).await.unwrap();
         repo.subscribe_user(2, source_id).await.unwrap();
         repo.insert_content(&Content {
@@ -553,7 +650,11 @@ mod tests {
         // Last subscriber leaves: source and its dedup ledger are removed.
         assert!(repo.unsubscribe_user(2, source_id).await.unwrap());
         assert!(repo.get_source(source_id).await.unwrap().is_none());
-        assert!(repo.existing_hash_ids(source_id, &["h1".to_owned()]).await.unwrap().is_empty());
+        assert!(repo
+            .existing_hash_ids(source_id, &["h1".to_owned()])
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -563,19 +664,51 @@ mod tests {
         let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
         let repo = Repo::new(pool);
 
-        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
-        assert_eq!(repo.get_source(source_id).await.unwrap().unwrap().error_count, Some(0));
+        let source_id = repo
+            .insert_source("https://example.com/feed", "Example")
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_source(source_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .error_count,
+            Some(0)
+        );
 
-        let paused = repo.toggle_source_update_status(source_id).await.unwrap().unwrap();
+        let paused = repo
+            .toggle_source_update_status(source_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(paused.error_count, Some(101));
 
-        let resumed = repo.toggle_source_update_status(source_id).await.unwrap().unwrap();
+        let resumed = repo
+            .toggle_source_update_status(source_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(resumed.error_count, Some(0));
 
         repo.disable_source_update(source_id).await.unwrap();
-        assert_eq!(repo.get_source(source_id).await.unwrap().unwrap().error_count, Some(101));
+        assert_eq!(
+            repo.get_source(source_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .error_count,
+            Some(101)
+        );
         repo.enable_source_update(source_id).await.unwrap();
-        assert_eq!(repo.get_source(source_id).await.unwrap().unwrap().error_count, Some(0));
+        assert_eq!(
+            repo.get_source(source_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .error_count,
+            Some(0)
+        );
     }
 
     #[tokio::test]
@@ -585,17 +718,36 @@ mod tests {
         let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
         let repo = Repo::new(pool);
 
-        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        let source_id = repo
+            .insert_source("https://example.com/feed", "Example")
+            .await
+            .unwrap();
         repo.subscribe_user(42, source_id).await.unwrap();
 
-        let sub = repo.toggle_subscription_notice(42, source_id).await.unwrap().unwrap();
+        let sub = repo
+            .toggle_subscription_notice(42, source_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(sub.enable_notification, Some(0));
-        let sub = repo.toggle_subscription_notice(42, source_id).await.unwrap().unwrap();
+        let sub = repo
+            .toggle_subscription_notice(42, source_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(sub.enable_notification, Some(1));
 
-        let sub = repo.toggle_subscription_telegraph(42, source_id).await.unwrap().unwrap();
+        let sub = repo
+            .toggle_subscription_telegraph(42, source_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(sub.enable_telegraph, Some(0));
-        let sub = repo.toggle_subscription_telegraph(42, source_id).await.unwrap().unwrap();
+        let sub = repo
+            .toggle_subscription_telegraph(42, source_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(sub.enable_telegraph, Some(1));
     }
 
@@ -629,7 +781,13 @@ mod tests {
         let remaining = repo
             .existing_hash_ids(
                 1,
-                &["h0".into(), "h1".into(), "h2".into(), "h3".into(), "h4".into()],
+                &[
+                    "h0".into(),
+                    "h1".into(),
+                    "h2".into(),
+                    "h3".into(),
+                    "h4".into(),
+                ],
             )
             .await
             .unwrap();

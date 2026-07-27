@@ -21,18 +21,12 @@ pub enum Command {
     Check,
     #[command(description = "设置rss订阅标签")]
     Setfeedtag(String),
-    #[command(description = "设置订阅刷新频率")]
-    Setinterval(String),
     #[command(description = "取消所有订阅")]
     Unsuball,
     #[command(description = "开启抓取订阅更新")]
     Activeall,
     #[command(description = "停止抓取所有订阅更新")]
     Pauseall,
-    #[command(description = "导入OPML文件")]
-    Import,
-    #[command(description = "导出OPML")]
-    Export,
     #[command(description = "")]
     Ping,
     #[command(description = "帮助")]

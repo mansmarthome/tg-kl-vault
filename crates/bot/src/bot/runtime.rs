@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use teloxide::{prelude::*, types::{ChatId, LinkPreviewOptions, ParseMode}};
+use teloxide::{
+    prelude::*,
+    types::{ChatId, LinkPreviewOptions, ParseMode},
+};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -16,9 +19,13 @@ use crate::{
     },
     config::{Config, MessageMode},
     db::{models::Content, repo::Repo},
-    feed::{fetch::{FetchOutcome, Fetcher}, hash::gen_hash_id, parse::parse_feed},
+    feed::{
+        fetch::{FetchOutcome, Fetcher},
+        hash::gen_hash_id,
+        parse::parse_feed,
+    },
     opml::{export_opml, OpmlSource},
-    preview::{trim_description, PublishRequest, PreviewPublisher, TelegraphPublisher},
+    preview::{trim_description, PreviewPublisher, PublishRequest, TelegraphPublisher},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,24 +63,45 @@ impl Lang {
         }
     }
 
+    pub fn settings_opml_button(self) -> &'static str {
+        match self {
+            Self::En => "OPML import/export",
+            Self::ZhTw => "OPML 匯入/匯出",
+        }
+    }
+
     pub fn settings_import_button(self) -> &'static str {
         match self {
-            Self::En => "Import OPML",
-            Self::ZhTw => "匯入 OPML",
+            Self::En => "Import",
+            Self::ZhTw => "匯入",
         }
     }
 
     pub fn settings_export_button(self) -> &'static str {
         match self {
-            Self::En => "Export OPML",
-            Self::ZhTw => "匯出 OPML",
+            Self::En => "Export",
+            Self::ZhTw => "匯出",
         }
     }
 
     pub fn settings_interval_button(self) -> &'static str {
         match self {
-            Self::En => "Set refresh interval",
-            Self::ZhTw => "設定更新頻率",
+            Self::En => "Refresh interval",
+            Self::ZhTw => "更新頻率",
+        }
+    }
+
+    pub fn settings_language_button(self) -> &'static str {
+        match self {
+            Self::En => "Language",
+            Self::ZhTw => "語系",
+        }
+    }
+
+    pub fn settings_back_button(self) -> &'static str {
+        match self {
+            Self::En => "Back",
+            Self::ZhTw => "返回",
         }
     }
 
@@ -86,8 +114,8 @@ impl Lang {
 
     pub fn interval_hint(self) -> &'static str {
         match self {
-            Self::En => "Use /setinterval <minutes> <source_id...> to set refresh intervals.",
-            Self::ZhTw => "請使用 /setinterval <分鐘> <source_id...> 設定更新頻率。",
+            Self::En => "Choose a refresh interval for all subscriptions in this chat.",
+            Self::ZhTw => "請選擇此聊天室所有訂閱的更新頻率。",
         }
     }
 
@@ -95,6 +123,13 @@ impl Lang {
         match self {
             Self::En => "Language updated: English",
             Self::ZhTw => "語言已更新：繁體中文",
+        }
+    }
+
+    pub fn interval_updated(self, count: u64) -> String {
+        match self {
+            Self::En => format!("Updated {count} subscriptions"),
+            Self::ZhTw => format!("已更新 {count} 個訂閱"),
         }
     }
 }
@@ -123,10 +158,18 @@ pub async fn run_bot(
         .collect::<Vec<_>>();
     bot.set_my_commands(commands).await?;
 
-    let state = Arc::new(BotState { repo, config, fetcher });
+    let state = Arc::new(BotState {
+        repo,
+        config,
+        fetcher,
+    });
 
     let handler = dptree::entry()
-        .branch(Update::filter_message().filter_command::<Command>().endpoint(handle_command))
+        .branch(
+            Update::filter_message()
+                .filter_command::<Command>()
+                .endpoint(handle_command),
+        )
         .branch(
             Update::filter_message()
                 .filter(|msg: Message| msg.document().is_some())
@@ -134,8 +177,9 @@ pub async fn run_bot(
         )
         .branch(Update::filter_callback_query().endpoint(handle_callback));
 
-    let mut dispatcher =
-        Dispatcher::builder(bot, handler).dependencies(dptree::deps![state]).build();
+    let mut dispatcher = Dispatcher::builder(bot, handler)
+        .dependencies(dptree::deps![state])
+        .build();
     let shutdown_token = dispatcher.shutdown_token();
 
     let dispatch_task = tokio::spawn(async move { dispatcher.dispatch().await });
@@ -149,11 +193,17 @@ pub async fn run_bot(
     Ok(())
 }
 
-async fn handle_command(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) -> ResponseResult<()> {
+async fn handle_command(
+    bot: Bot,
+    msg: Message,
+    cmd: Command,
+    state: Arc<BotState>,
+) -> ResponseResult<()> {
     match cmd {
         Command::Start => {
             info!(chat_id = msg.chat.id.0, "/start");
-            bot.send_message(msg.chat.id, "你好，欢迎使用flowerss。").await?;
+            bot.send_message(msg.chat.id, "你好，欢迎使用flowerss。")
+                .await?;
         }
         Command::Ping => {
             bot.send_message(msg.chat.id, "pong").await?;
@@ -176,18 +226,9 @@ async fn handle_command(bot: Bot, msg: Message, cmd: Command, state: Arc<BotStat
         Command::Sub(payload) => handle_subscribe(&bot, &msg, &state, payload.trim()).await?,
         Command::Unsub(payload) => handle_unsubscribe(&bot, &msg, &state, payload.trim()).await?,
         Command::Setfeedtag(payload) => handle_set_tag(&bot, &msg, &state, payload.trim()).await?,
-        Command::Setinterval(payload) => handle_set_interval(&bot, &msg, &state, payload.trim()).await?,
         Command::Set => handle_set(&bot, &msg, &state).await?,
         Command::Settings => handle_settings(&bot, &msg, &state).await?,
         Command::Check => handle_check(&bot, &msg, &state).await?,
-        Command::Import => {
-            bot.send_message(
-                msg.chat.id,
-                "请直接发送OPML文件，如果需要为频道导入OPML，请在发送文件的时候附上channel id，例如@telegram",
-            )
-            .await?;
-        }
-        Command::Export => handle_export(&bot, &msg, &state).await?,
     }
     Ok(())
 }
@@ -195,7 +236,12 @@ async fn handle_command(bot: Bot, msg: Message, cmd: Command, state: Arc<BotStat
 // Go sends these replies with legacy `tb.ModeMarkdown`, not MarkdownV2 (which
 // would require escaping titles/tags for punctuation Go never escapes).
 #[allow(deprecated)]
-async fn handle_subscribe(bot: &Bot, msg: &Message, state: &BotState, payload: &str) -> ResponseResult<()> {
+async fn handle_subscribe(
+    bot: &Bot,
+    msg: &Message,
+    state: &BotState,
+    payload: &str,
+) -> ResponseResult<()> {
     if payload.is_empty() {
         bot.send_message(
             msg.chat.id,
@@ -208,12 +254,18 @@ async fn handle_subscribe(bot: &Bot, msg: &Message, state: &BotState, payload: &
     let source = match create_source(&state.repo, &state.fetcher, payload).await {
         Ok(source) => source,
         Err(err) => {
-            bot.send_message(msg.chat.id, format!("{err}，订阅失败")).await?;
+            bot.send_message(msg.chat.id, format!("{err}，订阅失败"))
+                .await?;
             return Ok(());
         }
     };
 
-    if state.repo.subscribe_user(msg.chat.id.0, source.id).await.map_err(to_request_error)? {
+    if state
+        .repo
+        .subscribe_user(msg.chat.id.0, source.id)
+        .await
+        .map_err(to_request_error)?
+    {
         bot.send_message(
             msg.chat.id,
             format!(
@@ -227,15 +279,25 @@ async fn handle_subscribe(bot: &Bot, msg: &Message, state: &BotState, payload: &
         .link_preview_options(no_preview())
         .await?;
     } else {
-        bot.send_message(msg.chat.id, "已订阅该源，请勿重复订阅").await?;
+        bot.send_message(msg.chat.id, "已订阅该源，请勿重复订阅")
+            .await?;
     }
     Ok(())
 }
 
 #[allow(deprecated)]
-async fn handle_unsubscribe(bot: &Bot, msg: &Message, state: &BotState, payload: &str) -> ResponseResult<()> {
+async fn handle_unsubscribe(
+    bot: &Bot,
+    msg: &Message,
+    state: &BotState,
+    payload: &str,
+) -> ResponseResult<()> {
     if payload.is_empty() {
-        let sources = state.repo.subscriptions_for_user(msg.chat.id.0).await.map_err(to_request_error)?;
+        let sources = state
+            .repo
+            .subscriptions_for_user(msg.chat.id.0)
+            .await
+            .map_err(to_request_error)?;
         if sources.is_empty() {
             bot.send_message(msg.chat.id, "没有订阅").await?;
             return Ok(());
@@ -254,12 +316,22 @@ async fn handle_unsubscribe(bot: &Bot, msg: &Message, state: &BotState, payload:
         return Ok(());
     }
 
-    match state.repo.source_by_link(payload).await.map_err(to_request_error)? {
+    match state
+        .repo
+        .source_by_link(payload)
+        .await
+        .map_err(to_request_error)?
+    {
         None => {
             bot.send_message(msg.chat.id, "未订阅该RSS源").await?;
         }
         Some(source) => {
-            if state.repo.unsubscribe_user(msg.chat.id.0, source.id).await.map_err(to_request_error)? {
+            if state
+                .repo
+                .unsubscribe_user(msg.chat.id.0, source.id)
+                .await
+                .map_err(to_request_error)?
+            {
                 bot.send_message(
                     msg.chat.id,
                     format!(
@@ -279,17 +351,31 @@ async fn handle_unsubscribe(bot: &Bot, msg: &Message, state: &BotState, payload:
     Ok(())
 }
 
-async fn handle_set_tag(bot: &Bot, msg: &Message, state: &BotState, payload: &str) -> ResponseResult<()> {
+async fn handle_set_tag(
+    bot: &Bot,
+    msg: &Message,
+    state: &BotState,
+    payload: &str,
+) -> ResponseResult<()> {
     let mut parts = payload.split_whitespace();
     let Some(source_id) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
-        bot.send_message(msg.chat.id, "/setfeedtag [sourceID] [tag1] [tag2] 设置订阅标签（最多设置三个Tag，以空格分割）").await?;
+        bot.send_message(
+            msg.chat.id,
+            "/setfeedtag [sourceID] [tag1] [tag2] 设置订阅标签（最多设置三个Tag，以空格分割）",
+        )
+        .await?;
         return Ok(());
     };
     // Go: `subscription.Tag = "#" + strings.Join(tags, " #")` — note this
     // yields the literal tag "#" when no tags are given, which we replicate.
     let tag = parts.take(3).collect::<Vec<_>>().join(" ");
     let tag = format!("#{}", tag.replace(' ', " #"));
-    if state.repo.set_subscription_tag(msg.chat.id.0, source_id, &tag).await.map_err(to_request_error)? {
+    if state
+        .repo
+        .set_subscription_tag(msg.chat.id.0, source_id, &tag)
+        .await
+        .map_err(to_request_error)?
+    {
         bot.send_message(msg.chat.id, "订阅标签设置成功!").await?;
     } else {
         bot.send_message(msg.chat.id, "订阅标签设置失败!").await?;
@@ -297,24 +383,14 @@ async fn handle_set_tag(bot: &Bot, msg: &Message, state: &BotState, payload: &st
     Ok(())
 }
 
-async fn handle_set_interval(bot: &Bot, msg: &Message, state: &BotState, payload: &str) -> ResponseResult<()> {
-    let mut parts = payload.split_whitespace();
-    let Some(interval) = parts.next().and_then(|s| s.parse::<i64>().ok()).filter(|i| *i > 0) else {
-        bot.send_message(msg.chat.id, "/setinterval [interval] [sourceID] 设置订阅刷新频率（可设置多个sub id，以空格分割）").await?;
-        return Ok(());
-    };
-    let mut ok = true;
-    for source_id in parts.filter_map(|s| s.parse::<i64>().ok()) {
-        ok &= state.repo.set_subscription_interval(msg.chat.id.0, source_id, interval).await.map_err(to_request_error)?;
-    }
-    bot.send_message(msg.chat.id, if ok { "抓取频率设置成功!" } else { "抓取频率设置失败!" }).await?;
-    Ok(())
-}
-
 /// Port of Go's `Set.Handle`: shows one inline button per subscribed source;
 /// tapping one opens the toggle screen handled in `callbacks.rs`.
 async fn handle_set(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
-    let sources = state.repo.subscriptions_for_user(msg.chat.id.0).await.map_err(to_request_error)?;
+    let sources = state
+        .repo
+        .subscriptions_for_user(msg.chat.id.0)
+        .await
+        .map_err(to_request_error)?;
     if sources.is_empty() {
         bot.send_message(msg.chat.id, "当前没有订阅").await?;
         return Ok(());
@@ -324,26 +400,40 @@ async fn handle_set(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResul
         .filter_map(|s| Some((s.source_id?, s.title.clone().unwrap_or_default())))
         .collect::<Vec<_>>();
     bot.send_message(msg.chat.id, "请选择你要设置的源")
-        .reply_markup(feed_item_list_keyboard(crate::bot::callback::Button::SetFeedItem, msg.chat.id.0, &items))
+        .reply_markup(feed_item_list_keyboard(
+            crate::bot::callback::Button::SetFeedItem,
+            msg.chat.id.0,
+            &items,
+        ))
         .await?;
     Ok(())
 }
 
 async fn handle_settings(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
     let lang = chat_lang(&state.repo, msg.chat.id.0).await;
-    bot.send_message(msg.chat.id, lang.settings_title()).reply_markup(settings_keyboard(lang)).await?;
+    bot.send_message(msg.chat.id, lang.settings_title())
+        .reply_markup(settings_keyboard(lang))
+        .await?;
     Ok(())
 }
 
 async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
     let chat_id = msg.chat.id.0;
-    let sources = state.repo.subscriptions_for_user(chat_id).await.map_err(to_request_error)?;
+    let sources = state
+        .repo
+        .subscriptions_for_user(chat_id)
+        .await
+        .map_err(to_request_error)?;
     if sources.is_empty() {
         bot.send_message(msg.chat.id, "当前没有订阅").await?;
         return Ok(());
     }
 
-    bot.send_message(msg.chat.id, format!("已开始检查当前订阅，共{}个源", sources.len())).await?;
+    bot.send_message(
+        msg.chat.id,
+        format!("已开始检查当前订阅，共{}个源", sources.len()),
+    )
+    .await?;
 
     let sender = TeloxideSender::new(bot.clone());
     let publisher = TelegraphPublisher::new(&state.config.telegraph_token);
@@ -353,19 +443,41 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
     let now = now_unix();
 
     for sub in sources {
-        let Some(source_id) = sub.source_id else { continue };
-        let source = match state.repo.get_source(source_id).await.map_err(to_request_error)? {
+        let Some(source_id) = sub.source_id else {
+            continue;
+        };
+        let source = match state
+            .repo
+            .get_source(source_id)
+            .await
+            .map_err(to_request_error)?
+        {
             Some(source) => source,
             None => continue,
         };
-        let Some(link) = source.link.as_deref().filter(|s| !s.is_empty()) else { continue };
+        let Some(link) = source.link.as_deref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
 
-        match state.fetcher.fetch(link, source.etag.as_deref(), source.last_modified.as_deref()).await {
+        match state
+            .fetcher
+            .fetch(
+                link,
+                source.etag.as_deref(),
+                source.last_modified.as_deref(),
+            )
+            .await
+        {
             Ok(FetchOutcome::Unchanged) => {
                 unchanged_count += 1;
                 state
                     .repo
-                    .mark_source_success(source.id, None, None, next_fetch_at(now, state.config.update_interval))
+                    .mark_source_success(
+                        source.id,
+                        None,
+                        None,
+                        next_fetch_at(now, state.config.update_interval),
+                    )
                     .await
                     .map_err(to_request_error)?;
             }
@@ -378,8 +490,16 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
                         continue;
                     }
                 };
-                let hashes = parsed.items.iter().map(|item| gen_hash_id(link, &item.guid)).collect::<Vec<_>>();
-                let existing = state.repo.existing_hash_ids(source.id, &hashes).await.map_err(to_request_error)?;
+                let hashes = parsed
+                    .items
+                    .iter()
+                    .map(|item| gen_hash_id(link, &item.guid))
+                    .collect::<Vec<_>>();
+                let existing = state
+                    .repo
+                    .existing_hash_ids(source.id, &hashes)
+                    .await
+                    .map_err(to_request_error)?;
 
                 for (item, hash_id) in parsed.items.iter().zip(hashes) {
                     if existing.contains(&hash_id) {
@@ -415,8 +535,12 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
                         .await
                         .map_err(to_request_error)?;
 
-                    let preview_text = trim_description(item.description.as_deref().unwrap_or(""), state.config.preview_text);
-                    let enable_telegraph = sub.enable_telegraph == Some(1) && telegraph_url.is_some();
+                    let preview_text = trim_description(
+                        item.description.as_deref().unwrap_or(""),
+                        state.config.preview_text,
+                    );
+                    let enable_telegraph =
+                        sub.enable_telegraph == Some(1) && telegraph_url.is_some();
                     let data = MessageData {
                         source_title: source.title.as_deref().unwrap_or(""),
                         content_title: &item.title,
@@ -446,21 +570,33 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
 
                 state
                     .repo
-                    .mark_source_success(source.id, feed.etag.as_deref(), feed.last_modified.as_deref(), next_fetch_at(now, state.config.update_interval))
+                    .mark_source_success(
+                        source.id,
+                        feed.etag.as_deref(),
+                        feed.last_modified.as_deref(),
+                        next_fetch_at(now, state.config.update_interval),
+                    )
                     .await
                     .map_err(to_request_error)?;
             }
             Err(err) => {
                 warn!(source_id, error = %err, "manual check fetch failed");
                 error_count += 1;
-                state.repo.mark_source_error(source.id, now + 60).await.map_err(to_request_error)?;
+                state
+                    .repo
+                    .mark_source_error(source.id, now + 60)
+                    .await
+                    .map_err(to_request_error)?;
             }
         }
     }
 
     bot.send_message(
         msg.chat.id,
-        format!("检查完成：新增{}篇，{}个源无更新，{}个源失败", new_count, unchanged_count, error_count),
+        format!(
+            "检查完成：新增{}篇，{}个源无更新，{}个源失败",
+            new_count, unchanged_count, error_count
+        ),
     )
     .await?;
     Ok(())
@@ -470,7 +606,12 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
 /// (`error_count`) for every source the caller is subscribed to, not a
 /// per-subscriber flag — see `Core.DisableSourceUpdate`/`EnableSourceUpdate`.
 #[allow(deprecated)]
-async fn set_all_sources_update(bot: &Bot, msg: &Message, state: &BotState, enable: bool) -> ResponseResult<()> {
+async fn set_all_sources_update(
+    bot: &Bot,
+    msg: &Message,
+    state: &BotState,
+    enable: bool,
+) -> ResponseResult<()> {
     let sources = match state.repo.subscriptions_for_user(msg.chat.id.0).await {
         Ok(sources) => sources,
         Err(_) => {
@@ -479,35 +620,60 @@ async fn set_all_sources_update(bot: &Bot, msg: &Message, state: &BotState, enab
         }
     };
     for source in &sources {
-        let Some(source_id) = source.source_id else { continue };
+        let Some(source_id) = source.source_id else {
+            continue;
+        };
         let result = if enable {
             state.repo.enable_source_update(source_id).await
         } else {
             state.repo.disable_source_update(source_id).await
         };
         if result.is_err() {
-            bot.send_message(msg.chat.id, if enable { "激活失败" } else { "暂停失败" }).await?;
+            bot.send_message(
+                msg.chat.id,
+                if enable {
+                    "激活失败"
+                } else {
+                    "暂停失败"
+                },
+            )
+            .await?;
             return Ok(());
         }
     }
-    let reply = if enable { "订阅已全部开启" } else { "订阅已全部暂停" };
-    bot.send_message(msg.chat.id, reply).parse_mode(ParseMode::Markdown).link_preview_options(no_preview()).await?;
+    let reply = if enable {
+        "订阅已全部开启"
+    } else {
+        "订阅已全部暂停"
+    };
+    bot.send_message(msg.chat.id, reply)
+        .parse_mode(ParseMode::Markdown)
+        .link_preview_options(no_preview())
+        .await?;
     Ok(())
 }
 
-async fn handle_export(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
-    export_chat_opml(bot, msg.chat.id, msg.chat.id.0, state).await
-}
-
-pub async fn export_chat_opml(bot: &Bot, chat_id: ChatId, owner_id: i64, state: &BotState) -> ResponseResult<()> {
-    let sources = state.repo.subscriptions_for_user(owner_id).await.map_err(to_request_error)?;
+pub async fn export_chat_opml(
+    bot: &Bot,
+    chat_id: ChatId,
+    owner_id: i64,
+    state: &BotState,
+) -> ResponseResult<()> {
+    let sources = state
+        .repo
+        .subscriptions_for_user(owner_id)
+        .await
+        .map_err(to_request_error)?;
     if sources.is_empty() {
         bot.send_message(chat_id, "订阅列表为空").await?;
         return Ok(());
     }
     let opml_sources = sources
         .iter()
-        .map(|s| OpmlSource { title: s.title.clone().unwrap_or_default(), xml_url: s.link.clone().unwrap_or_default() })
+        .map(|s| OpmlSource {
+            title: s.title.clone().unwrap_or_default(),
+            xml_url: s.link.clone().unwrap_or_default(),
+        })
         .collect::<Vec<_>>();
     let Ok(opml_text) = export_opml(&opml_sources) else {
         bot.send_message(chat_id, "导出失败").await?;
@@ -524,7 +690,11 @@ pub async fn export_chat_opml(bot: &Bot, chat_id: ChatId, owner_id: i64, state: 
 
 #[allow(deprecated)]
 async fn list_subscriptions(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
-    let sources = state.repo.subscriptions_for_user(msg.chat.id.0).await.map_err(to_request_error)?;
+    let sources = state
+        .repo
+        .subscriptions_for_user(msg.chat.id.0)
+        .await
+        .map_err(to_request_error)?;
     if sources.is_empty() {
         bot.send_message(msg.chat.id, "订阅列表为空").await?;
         return Ok(());
@@ -538,7 +708,10 @@ async fn list_subscriptions(bot: &Bot, msg: &Message, state: &BotState) -> Respo
             source.link.unwrap_or_default()
         ));
     }
-    bot.send_message(msg.chat.id, text).parse_mode(ParseMode::Markdown).link_preview_options(no_preview()).await?;
+    bot.send_message(msg.chat.id, text)
+        .parse_mode(ParseMode::Markdown)
+        .link_preview_options(no_preview())
+        .await?;
     Ok(())
 }
 
@@ -547,21 +720,37 @@ fn lang_option_name(chat_id: i64) -> String {
 }
 
 pub async fn chat_lang(repo: &Repo, chat_id: i64) -> Lang {
-    Lang::from_value(repo.get_option(&lang_option_name(chat_id)).await.ok().flatten().as_deref())
+    Lang::from_value(
+        repo.get_option(&lang_option_name(chat_id))
+            .await
+            .ok()
+            .flatten()
+            .as_deref(),
+    )
 }
 
 pub async fn set_chat_lang(repo: &Repo, chat_id: i64, lang: Lang) -> anyhow::Result<()> {
-    repo.set_option(&lang_option_name(chat_id), lang.value()).await?;
+    repo.set_option(&lang_option_name(chat_id), lang.value())
+        .await?;
     Ok(())
 }
 
 pub(crate) fn no_preview() -> LinkPreviewOptions {
-    LinkPreviewOptions { is_disabled: true, url: None, prefer_small_media: false, prefer_large_media: false, show_above_text: false }
+    LinkPreviewOptions {
+        is_disabled: true,
+        url: None,
+        prefer_small_media: false,
+        prefer_large_media: false,
+        show_above_text: false,
+    }
 }
 
 fn now_unix() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 fn next_fetch_at(now: i64, interval_minutes: u64) -> i64 {
@@ -572,6 +761,8 @@ fn non_empty(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
-pub(crate) fn to_request_error(err: impl std::error::Error + Send + Sync + 'static) -> teloxide::RequestError {
+pub(crate) fn to_request_error(
+    err: impl std::error::Error + Send + Sync + 'static,
+) -> teloxide::RequestError {
     teloxide::RequestError::Io(std::sync::Arc::new(std::io::Error::other(err)))
 }

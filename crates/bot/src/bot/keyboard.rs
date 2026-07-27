@@ -15,7 +15,10 @@ pub fn feed_item_list_keyboard(
     let rows = sources
         .iter()
         .map(|(source_id, title)| {
-            let attachment = Attachment { user_id, source_id: *source_id as u32 };
+            let attachment = Attachment {
+                user_id,
+                source_id: *source_id as u32,
+            };
             vec![InlineKeyboardButton::callback(
                 format!("[{source_id}] {title}"),
                 encode_telebot_callback(button, attachment),
@@ -35,10 +38,21 @@ pub fn feed_setting_keyboard(
     enable_notification: Option<i64>,
     enable_telegraph: Option<i64>,
 ) -> InlineKeyboardMarkup {
-    let toggle_update_text = if source_error_count >= error_threshold { "重启更新" } else { "暂停更新" };
-    let toggle_notice_text = if enable_notification == Some(1) { "关闭通知" } else { "开启通知" };
-    let toggle_telegraph_text =
-        if enable_telegraph == Some(1) { "关闭 Telegraph 转码" } else { "开启 Telegraph 转码" };
+    let toggle_update_text = if source_error_count >= error_threshold {
+        "重启更新"
+    } else {
+        "暂停更新"
+    };
+    let toggle_notice_text = if enable_notification == Some(1) {
+        "关闭通知"
+    } else {
+        "开启通知"
+    };
+    let toggle_telegraph_text = if enable_telegraph == Some(1) {
+        "关闭 Telegraph 转码"
+    } else {
+        "开启 Telegraph 转码"
+    };
 
     InlineKeyboardMarkup::new(vec![
         vec![
@@ -68,23 +82,80 @@ pub fn feed_setting_keyboard(
 /// attachment payload at all (`Data` is left unset), so the callback handler
 /// authorizes off the callback sender directly rather than an embedded id.
 pub fn unsuball_confirm_keyboard() -> InlineKeyboardMarkup {
-    let empty = Attachment { user_id: 0, source_id: 0 };
+    let empty = Attachment {
+        user_id: 0,
+        source_id: 0,
+    };
     InlineKeyboardMarkup::new(vec![vec![
-        InlineKeyboardButton::callback("确认", encode_telebot_callback(Button::UnsubAllConfirm, empty)),
-        InlineKeyboardButton::callback("取消", encode_telebot_callback(Button::UnsubAllCancel, empty)),
+        InlineKeyboardButton::callback(
+            "确认",
+            encode_telebot_callback(Button::UnsubAllConfirm, empty),
+        ),
+        InlineKeyboardButton::callback(
+            "取消",
+            encode_telebot_callback(Button::UnsubAllCancel, empty),
+        ),
     ]])
 }
 
 pub fn settings_keyboard(lang: Lang) -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![
+        vec![InlineKeyboardButton::callback(
+            lang.settings_opml_button(),
+            "settings:opml",
+        )],
+        vec![InlineKeyboardButton::callback(
+            lang.settings_interval_button(),
+            "settings:interval",
+        )],
+        vec![InlineKeyboardButton::callback(
+            lang.settings_language_button(),
+            "settings:language",
+        )],
+    ])
+}
+
+pub fn settings_opml_keyboard(lang: Lang) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
         vec![
-            InlineKeyboardButton::callback(lang.settings_import_button(), "settings:import"),
-            InlineKeyboardButton::callback(lang.settings_export_button(), "settings:export"),
+            InlineKeyboardButton::callback(lang.settings_import_button(), "settings:opml:import"),
+            InlineKeyboardButton::callback(lang.settings_export_button(), "settings:opml:export"),
         ],
-        vec![InlineKeyboardButton::callback(lang.settings_interval_button(), "settings:setinterval")],
+        vec![InlineKeyboardButton::callback(
+            lang.settings_back_button(),
+            "settings:back",
+        )],
+    ])
+}
+
+pub fn settings_language_keyboard(lang: Lang) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
         vec![
-            InlineKeyboardButton::callback("English", "settings:lang:en"),
-            InlineKeyboardButton::callback("繁體中文", "settings:lang:zh-tw"),
+            InlineKeyboardButton::callback("English", "settings:language:en"),
+            InlineKeyboardButton::callback("繁體中文", "settings:language:zh-tw"),
         ],
+        vec![InlineKeyboardButton::callback(
+            lang.settings_back_button(),
+            "settings:back",
+        )],
+    ])
+}
+
+pub fn settings_interval_keyboard(lang: Lang) -> InlineKeyboardMarkup {
+    let labels = [5, 10, 30, 60, 120]
+        .into_iter()
+        .map(|minutes| {
+            InlineKeyboardButton::callback(
+                format!("{minutes} min"),
+                format!("settings:interval:{minutes}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    InlineKeyboardMarkup::new(vec![
+        labels,
+        vec![InlineKeyboardButton::callback(
+            lang.settings_back_button(),
+            "settings:back",
+        )],
     ])
 }

@@ -1,28 +1,13 @@
-on: [push, pull_request]
 name: Test
+
+on: [push, pull_request]
+
 jobs:
   test:
-    strategy:
-      matrix:
-        go-version: [1.18.x, 1.19.x]
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
-      - name: Install Go
-        uses: actions/setup-go@v2
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Checkout code
-        uses: actions/checkout@v2
-
-      - name: Generate coverage report
-        run: |
-          go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-
-      - name: Upload coverage report
-        uses: codecov/codecov-action@v1
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          file: ./coverage.txt
-          flags: unittests
-          name: codecov-umbrella-${{ matrix.os }}-${{ matrix.go-version }}
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings

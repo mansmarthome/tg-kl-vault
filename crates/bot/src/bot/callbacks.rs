@@ -9,9 +9,12 @@ use tracing::warn;
 use crate::{
     bot::{
         callback::{decode_telebot_callback, Attachment, Button},
-        keyboard::{feed_setting_keyboard, settings_keyboard},
+        keyboard::{
+            feed_setting_keyboard, settings_interval_keyboard, settings_keyboard,
+            settings_language_keyboard, settings_opml_keyboard,
+        },
         render::{render_feed_setting, FeedSettingData},
-        runtime::{export_chat_opml, chat_lang, set_chat_lang, BotState, Lang},
+        runtime::{chat_lang, export_chat_opml, set_chat_lang, BotState, Lang},
     },
     config::ERROR_THRESHOLD,
     db::models::{Source, Subscribe},
@@ -21,9 +24,17 @@ use crate::{
 /// `02-bot-rewrite.md` §4. Every button carries the same hex-encoded
 /// `Attachment` payload (only the button `unique` differs), decoded once
 /// here and passed to the per-button handler below.
-pub async fn handle_callback(bot: Bot, query: CallbackQuery, state: Arc<BotState>) -> ResponseResult<()> {
-    let Some(data) = query.data.as_deref() else { return Ok(()) };
-    let Some(message) = query.regular_message() else { return Ok(()) };
+pub async fn handle_callback(
+    bot: Bot,
+    query: CallbackQuery,
+    state: Arc<BotState>,
+) -> ResponseResult<()> {
+    let Some(data) = query.data.as_deref() else {
+        return Ok(());
+    };
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
     let chat_id = message.chat.id;
     let message_id = message.id;
 
@@ -42,22 +53,58 @@ pub async fn handle_callback(bot: Bot, query: CallbackQuery, state: Arc<BotState
 
     match callback.button {
         Button::SetFeedItem => {
-            handle_set_feed_item(&bot, &query, &state, callback.attachment, chat_id, message_id).await
+            handle_set_feed_item(
+                &bot,
+                &query,
+                &state,
+                callback.attachment,
+                chat_id,
+                message_id,
+            )
+            .await
         }
         Button::SetToggleUpdate => {
-            handle_toggle_update(&bot, &query, &state, callback.attachment, chat_id, message_id).await
+            handle_toggle_update(
+                &bot,
+                &query,
+                &state,
+                callback.attachment,
+                chat_id,
+                message_id,
+            )
+            .await
         }
         Button::SetToggleNotice => {
-            handle_toggle_notice(&bot, &query, &state, callback.attachment, chat_id, message_id).await
+            handle_toggle_notice(
+                &bot,
+                &query,
+                &state,
+                callback.attachment,
+                chat_id,
+                message_id,
+            )
+            .await
         }
         Button::SetToggleTelegraph => {
-            handle_toggle_telegraph(&bot, &query, &state, callback.attachment, chat_id, message_id).await
+            handle_toggle_telegraph(
+                &bot,
+                &query,
+                &state,
+                callback.attachment,
+                chat_id,
+                message_id,
+            )
+            .await
         }
-        Button::SetSetSubTag => handle_set_sub_tag(&bot, &query, callback.attachment, chat_id, message_id).await,
+        Button::SetSetSubTag => {
+            handle_set_sub_tag(&bot, &query, callback.attachment, chat_id, message_id).await
+        }
         Button::UnsubFeedItem => {
             handle_unsub_feed_item(&bot, &state, callback.attachment, chat_id, message_id).await
         }
-        Button::UnsubAllConfirm => handle_unsuball_confirm(&bot, &state, &query, chat_id, message_id).await,
+        Button::UnsubAllConfirm => {
+            handle_unsuball_confirm(&bot, &state, &query, chat_id, message_id).await
+        }
         Button::UnsubAllCancel => handle_unsuball_cancel(&bot, chat_id, message_id).await,
     }
 }
@@ -72,11 +119,18 @@ fn is_authorized(attachment: Attachment, query: &CallbackQuery) -> bool {
 }
 
 async fn respond_toast(bot: &Bot, query: &CallbackQuery, text: &str) -> ResponseResult<()> {
-    bot.answer_callback_query(query.id.clone()).text(text).await?;
+    bot.answer_callback_query(query.id.clone())
+        .text(text)
+        .await?;
     Ok(())
 }
 
-async fn edit_plain(bot: &Bot, chat_id: ChatId, message_id: MessageId, text: &str) -> ResponseResult<()> {
+async fn edit_plain(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    text: &str,
+) -> ResponseResult<()> {
     bot.edit_message_text(chat_id, message_id, text).await?;
     Ok(())
 }
@@ -92,11 +146,62 @@ async fn handle_settings_callback(
     let owner_id = chat_id.0;
     let current_lang = chat_lang(&state.repo, owner_id).await;
     match action {
-        "import" => respond_toast(bot, query, current_lang.import_hint()).await,
-        "export" => export_chat_opml(bot, chat_id, owner_id, state).await,
-        "setinterval" => edit_plain(bot, chat_id, message_id, current_lang.interval_hint()).await,
-        "lang:en" | "lang:zh-tw" => {
-            let lang = if action.ends_with("en") { Lang::En } else { Lang::ZhTw };
+        "back" => {
+            bot.edit_message_text(chat_id, message_id, current_lang.settings_title())
+                .reply_markup(settings_keyboard(current_lang))
+                .await?;
+            Ok(())
+        }
+        "opml" => {
+            bot.edit_message_text(chat_id, message_id, current_lang.settings_opml_button())
+                .reply_markup(settings_opml_keyboard(current_lang))
+                .await?;
+            Ok(())
+        }
+        "opml:import" => {
+            bot.edit_message_text(chat_id, message_id, current_lang.import_hint())
+                .reply_markup(settings_opml_keyboard(current_lang))
+                .await?;
+            Ok(())
+        }
+        "opml:export" => export_chat_opml(bot, chat_id, owner_id, state).await,
+        "interval" => {
+            bot.edit_message_text(chat_id, message_id, current_lang.interval_hint())
+                .reply_markup(settings_interval_keyboard(current_lang))
+                .await?;
+            Ok(())
+        }
+        action if action.starts_with("interval:") => {
+            let Some(minutes) = action
+                .strip_prefix("interval:")
+                .and_then(|v| v.parse::<i64>().ok())
+            else {
+                return respond_toast(bot, query, "error").await;
+            };
+            match state
+                .repo
+                .set_all_subscription_interval(owner_id, minutes)
+                .await
+            {
+                Ok(count) => respond_toast(bot, query, &current_lang.interval_updated(count)).await,
+                Err(err) => {
+                    warn!(owner_id, minutes, error = %err, "failed to set interval");
+                    respond_toast(bot, query, "error").await
+                }
+            }
+        }
+        "language" => {
+            bot.edit_message_text(chat_id, message_id, current_lang.settings_language_button())
+                .reply_markup(settings_language_keyboard(current_lang))
+                .await?;
+            Ok(())
+        }
+        "language:en" | "language:zh-tw" => {
+            let lang = if action.ends_with("en") {
+                Lang::En
+            } else {
+                Lang::ZhTw
+            };
             if let Err(err) = set_chat_lang(&state.repo, owner_id, lang).await {
                 warn!(owner_id, error = %err, "failed to set language");
                 return respond_toast(bot, query, "error").await;
@@ -137,7 +242,10 @@ async fn render_and_edit_setting(
         sub.enable_notification,
         sub.enable_telegraph,
     );
-    bot.edit_message_text(chat_id, message_id, text).parse_mode(ParseMode::Html).reply_markup(keyboard).await?;
+    bot.edit_message_text(chat_id, message_id, text)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(keyboard)
+        .await?;
     Ok(())
 }
 
@@ -199,7 +307,11 @@ async fn handle_toggle_notice(
     let Ok(Some(source)) = state.repo.get_source(source_id).await else {
         return respond_toast(bot, query, "error").await;
     };
-    let Ok(Some(sub)) = state.repo.toggle_subscription_notice(attachment.user_id, source_id).await else {
+    let Ok(Some(sub)) = state
+        .repo
+        .toggle_subscription_notice(attachment.user_id, source_id)
+        .await
+    else {
         return respond_toast(bot, query, "error").await;
     };
     respond_toast(bot, query, "修改成功").await?;
@@ -221,7 +333,11 @@ async fn handle_toggle_telegraph(
     let Ok(Some(source)) = state.repo.get_source(source_id).await else {
         return respond_toast(bot, query, "error").await;
     };
-    let Ok(Some(sub)) = state.repo.toggle_subscription_telegraph(attachment.user_id, source_id).await else {
+    let Ok(Some(sub)) = state
+        .repo
+        .toggle_subscription_telegraph(attachment.user_id, source_id)
+        .await
+    else {
         return respond_toast(bot, query, "error").await;
     };
     respond_toast(bot, query, "修改成功").await?;
@@ -247,7 +363,9 @@ async fn handle_set_sub_tag(
     let text = format!(
         "请使用`/setfeedtag {source_id} tags`命令为该订阅设置标签，tags为需要设置的标签，以空格分隔。（最多设置三个标签） \n例如：`/setfeedtag {source_id} 科技 苹果`"
     );
-    bot.edit_message_text(chat_id, message_id, text).parse_mode(ParseMode::Markdown).await?;
+    bot.edit_message_text(chat_id, message_id, text)
+        .parse_mode(ParseMode::Markdown)
+        .await?;
     Ok(())
 }
 
@@ -266,14 +384,20 @@ async fn handle_unsub_feed_item(
     let Ok(Some(source)) = state.repo.get_source(source_id).await else {
         return edit_plain(bot, chat_id, message_id, "退订错误！").await;
     };
-    match state.repo.unsubscribe_user(attachment.user_id, source_id).await {
+    match state
+        .repo
+        .unsubscribe_user(attachment.user_id, source_id)
+        .await
+    {
         Ok(_) => {
             let text = format!(
                 "[{source_id}] <a href=\"{}\">{}</a> 退订成功",
                 source.link.as_deref().unwrap_or(""),
                 source.title.as_deref().unwrap_or("")
             );
-            bot.edit_message_text(chat_id, message_id, text).parse_mode(ParseMode::Html).await?;
+            bot.edit_message_text(chat_id, message_id, text)
+                .parse_mode(ParseMode::Html)
+                .await?;
             Ok(())
         }
         Err(_) => edit_plain(bot, chat_id, message_id, "退订错误！").await,
@@ -294,6 +418,10 @@ async fn handle_unsuball_confirm(
     }
 }
 
-async fn handle_unsuball_cancel(bot: &Bot, chat_id: ChatId, message_id: MessageId) -> ResponseResult<()> {
+async fn handle_unsuball_cancel(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+) -> ResponseResult<()> {
     edit_plain(bot, chat_id, message_id, "操作取消").await
 }
