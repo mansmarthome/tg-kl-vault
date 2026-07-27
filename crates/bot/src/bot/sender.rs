@@ -15,7 +15,7 @@ pub enum SendOutcome {
     Sent,
     /// The bot has been blocked/kicked by the recipient. Matches the Go
     /// original's substring check on `"Forbidden"` in the API error text;
-    /// callers should auto-unsubscribe on this outcome (see `BroadcastNews`).
+    /// callers should treat this as a send failure without deleting data.
     Forbidden,
 }
 

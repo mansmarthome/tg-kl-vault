@@ -47,7 +47,7 @@ Implemented:
 - OPML import/export.
 - Message rendering and Telegram sending pipeline.
 - 429 retry handling with Telegram `retry_after`.
-- Auto-unsubscribe on Telegram `Forbidden` errors.
+- Telegram `Forbidden` send failures are logged without deleting subscriptions.
 - Graceful shutdown on SIGINT/SIGTERM.
 - Retention pruning for old `contents` rows while keeping a dedup baseline.
 - Telegraph preview publishing through the local `telegraph` crate, including HTML-to-Telegraph node conversion, `createPage`, round-robin token selection, and `FLOOD_WAIT_n` cooldown handling.
@@ -415,7 +415,7 @@ The bot retries once after Telegram's `retry_after` value. If rate limits keep h
 
 ### Telegram Forbidden errors
 
-When Telegram returns `Forbidden`, the bot automatically unsubscribes that user/chat from the affected source, matching the intended production behavior.
+When Telegram returns `Forbidden`, the bot logs the send failure but keeps the subscription. This avoids accidental subscription loss during import/manual check flows; remove the chat manually if it should no longer receive updates.
 
 ## License
 

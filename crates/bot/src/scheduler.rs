@@ -176,8 +176,10 @@ where
 
     /// Port of Go's `Bot.BroadcastNews` inner loop for a single new item:
     /// render the configured template per-subscriber and send, honoring the
-    /// per-subscriber notification/telegraph flags and tag. On `Forbidden`
-    /// (bot blocked/kicked), auto-unsubscribe that user from the source.
+    /// per-subscriber notification/telegraph flags and tag. On `Forbidden`,
+    /// keep the subscription and only log the failure: deleting subscriptions
+    /// from the send path proved too risky because one bad send during a manual
+    /// check/import flow could make `/list` appear empty.
     async fn broadcast_item(
         &self,
         source: &Source,
@@ -213,7 +215,7 @@ where
             match self.sender.send_text(user_id, &text, options).await {
                 Ok(SendOutcome::Sent) => {}
                 Ok(SendOutcome::Forbidden) => {
-                    self.repo.unsubscribe_user(user_id, source.id).await?;
+                    warn!(source_id = source.id, user_id, hash_id, "broadcast forbidden; subscription kept");
                 }
                 Err(err) => {
                     warn!(
@@ -425,7 +427,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broadcast_item_sends_per_subscriber_and_auto_unsubscribes_forbidden() {
+    async fn broadcast_item_sends_per_subscriber_and_keeps_forbidden_subscription() {
         let dir = tempfile::tempdir().unwrap();
         let pool = db::connect(dir.path().join("data.db").to_str().unwrap()).await.unwrap();
         let repo = Repo::new(pool);
@@ -469,6 +471,6 @@ mod tests {
         }
 
         assert!(repo.subscription(1, source_id).await.unwrap().is_some());
-        assert!(repo.subscription(2, source_id).await.unwrap().is_none());
+        assert!(repo.subscription(2, source_id).await.unwrap().is_some());
     }
 }

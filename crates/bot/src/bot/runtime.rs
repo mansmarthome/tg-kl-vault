@@ -257,7 +257,6 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
         return Ok(());
     }
 
-    state.repo.mark_user_sources_due(chat_id).await.map_err(to_request_error)?;
     bot.send_message(msg.chat.id, format!("已开始检查当前订阅，共{}个源", sources.len())).await?;
 
     let sender = TeloxideSender::new(bot.clone());
