@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use teloxide::{prelude::*, types::{LinkPreviewOptions, ParseMode}};
+use teloxide::{prelude::*, types::{ChatId, LinkPreviewOptions, ParseMode}};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -9,7 +9,7 @@ use crate::{
         callbacks::handle_callback,
         commands::{Command, COMMANDS},
         documents::handle_document,
-        keyboard::{feed_item_list_keyboard, unsuball_confirm_keyboard},
+        keyboard::{feed_item_list_keyboard, settings_keyboard, unsuball_confirm_keyboard},
         render::{render_html, render_markdown, MessageData},
         sender::{MessageSender, SendOptions, TeloxideSender},
         subscribe::create_source,
@@ -20,6 +20,84 @@ use crate::{
     opml::{export_opml, OpmlSource},
     preview::{trim_description, PublishRequest, PreviewPublisher, TelegraphPublisher},
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lang {
+    En,
+    ZhTw,
+}
+
+impl Lang {
+    pub fn from_value(value: Option<&str>) -> Self {
+        match value {
+            Some("en") => Self::En,
+            _ => Self::ZhTw,
+        }
+    }
+
+    pub fn value(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::ZhTw => "zh-tw",
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Self::En => "Commands:\n/sub Subscribe to an RSS feed\n/unsub Unsubscribe\n/list Show subscriptions\n/set Feed settings\n/settings Bot settings\n/check Check current subscriptions\n/activeall Enable all subscriptions\n/pauseall Pause all subscriptions\n/unsuball Remove all subscriptions\n/help Help\n/version Bot version",
+            Self::ZhTw => "命令：\n/sub 訂閱 RSS 源\n/unsub 取消訂閱\n/list 查看目前訂閱源\n/set 設定訂閱\n/settings Bot 設定\n/check 檢查目前訂閱\n/activeall 開啟所有訂閱\n/pauseall 暫停所有訂閱\n/unsuball 取消所有訂閱\n/help 幫助\n/version Bot 版本資訊",
+        }
+    }
+
+    pub fn settings_title(self) -> &'static str {
+        match self {
+            Self::En => "Settings",
+            Self::ZhTw => "設定",
+        }
+    }
+
+    pub fn settings_import_button(self) -> &'static str {
+        match self {
+            Self::En => "Import OPML",
+            Self::ZhTw => "匯入 OPML",
+        }
+    }
+
+    pub fn settings_export_button(self) -> &'static str {
+        match self {
+            Self::En => "Export OPML",
+            Self::ZhTw => "匯出 OPML",
+        }
+    }
+
+    pub fn settings_interval_button(self) -> &'static str {
+        match self {
+            Self::En => "Set refresh interval",
+            Self::ZhTw => "設定更新頻率",
+        }
+    }
+
+    pub fn import_hint(self) -> &'static str {
+        match self {
+            Self::En => "Send an OPML file to import subscriptions.",
+            Self::ZhTw => "請直接傳送 OPML 檔案以匯入訂閱。",
+        }
+    }
+
+    pub fn interval_hint(self) -> &'static str {
+        match self {
+            Self::En => "Use /setinterval <minutes> <source_id...> to set refresh intervals.",
+            Self::ZhTw => "請使用 /setinterval <分鐘> <source_id...> 設定更新頻率。",
+        }
+    }
+
+    pub fn lang_updated(self) -> &'static str {
+        match self {
+            Self::En => "Language updated: English",
+            Self::ZhTw => "語言已更新：繁體中文",
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct BotState {
@@ -81,10 +159,11 @@ async fn handle_command(bot: Bot, msg: Message, cmd: Command, state: Arc<BotStat
             bot.send_message(msg.chat.id, "pong").await?;
         }
         Command::Help => {
-            bot.send_message(msg.chat.id, help_message()).await?;
+            let lang = chat_lang(&state.repo, msg.chat.id.0).await;
+            bot.send_message(msg.chat.id, lang.help()).await?;
         }
         Command::Version => {
-            bot.send_message(msg.chat.id, "version dev, commit none, built at unknown").await?;
+            bot.send_message(msg.chat.id, "tg-kl-vault compatible with flowerss-bot, version dev, commit none, built at unknown").await?;
         }
         Command::List => list_subscriptions(&bot, &msg, &state).await?,
         Command::Unsuball => {
@@ -99,6 +178,7 @@ async fn handle_command(bot: Bot, msg: Message, cmd: Command, state: Arc<BotStat
         Command::Setfeedtag(payload) => handle_set_tag(&bot, &msg, &state, payload.trim()).await?,
         Command::Setinterval(payload) => handle_set_interval(&bot, &msg, &state, payload.trim()).await?,
         Command::Set => handle_set(&bot, &msg, &state).await?,
+        Command::Settings => handle_settings(&bot, &msg, &state).await?,
         Command::Check => handle_check(&bot, &msg, &state).await?,
         Command::Import => {
             bot.send_message(
@@ -246,6 +326,12 @@ async fn handle_set(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResul
     bot.send_message(msg.chat.id, "请选择你要设置的源")
         .reply_markup(feed_item_list_keyboard(crate::bot::callback::Button::SetFeedItem, msg.chat.id.0, &items))
         .await?;
+    Ok(())
+}
+
+async fn handle_settings(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, msg.chat.id.0).await;
+    bot.send_message(msg.chat.id, lang.settings_title()).reply_markup(settings_keyboard(lang)).await?;
     Ok(())
 }
 
@@ -410,9 +496,13 @@ async fn set_all_sources_update(bot: &Bot, msg: &Message, state: &BotState, enab
 }
 
 async fn handle_export(bot: &Bot, msg: &Message, state: &BotState) -> ResponseResult<()> {
-    let sources = state.repo.subscriptions_for_user(msg.chat.id.0).await.map_err(to_request_error)?;
+    export_chat_opml(bot, msg.chat.id, msg.chat.id.0, state).await
+}
+
+pub async fn export_chat_opml(bot: &Bot, chat_id: ChatId, owner_id: i64, state: &BotState) -> ResponseResult<()> {
+    let sources = state.repo.subscriptions_for_user(owner_id).await.map_err(to_request_error)?;
     if sources.is_empty() {
-        bot.send_message(msg.chat.id, "订阅列表为空").await?;
+        bot.send_message(chat_id, "订阅列表为空").await?;
         return Ok(());
     }
     let opml_sources = sources
@@ -420,14 +510,14 @@ async fn handle_export(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRe
         .map(|s| OpmlSource { title: s.title.clone().unwrap_or_default(), xml_url: s.link.clone().unwrap_or_default() })
         .collect::<Vec<_>>();
     let Ok(opml_text) = export_opml(&opml_sources) else {
-        bot.send_message(msg.chat.id, "导出失败").await?;
+        bot.send_message(chat_id, "导出失败").await?;
         return Ok(());
     };
 
     let file_name = format!("subscriptions_{}.opml", now_unix());
     let document = teloxide::types::InputFile::memory(opml_text.into_bytes()).file_name(file_name);
-    if bot.send_document(msg.chat.id, document).await.is_err() {
-        bot.send_message(msg.chat.id, "导出失败").await?;
+    if bot.send_document(chat_id, document).await.is_err() {
+        bot.send_message(chat_id, "导出失败").await?;
     }
     Ok(())
 }
@@ -452,11 +542,17 @@ async fn list_subscriptions(bot: &Bot, msg: &Message, state: &BotState) -> Respo
     Ok(())
 }
 
-/// Byte-for-byte port of the Go `/help` text (`internal/bot/handler/help.go`),
-/// including its stray reference to `/check`, which has no handler in either
-/// version — copied verbatim rather than "corrected".
-fn help_message() -> &'static str {
-    "\n\t命令：\n\t/sub 订阅源\n\t/unsub  取消订阅\n\t/list 查看当前订阅源\n\t/set 设置订阅\n\t/check 检查当前订阅\n\t/setfeedtag 设置订阅标签\n\t/setinterval 设置订阅刷新频率\n\t/activeall 开启所有订阅\n\t/pauseall 暂停所有订阅\n\t/help 帮助\n\t/import 导入 OPML 文件\n\t/export 导出 OPML 文件\n\t/unsuball 取消所有订阅\n\t详细使用方法请看：https://github.com/indes/flowerss-bot\n\t"
+fn lang_option_name(chat_id: i64) -> String {
+    format!("tg-kl-vault:lang:{chat_id}")
+}
+
+pub async fn chat_lang(repo: &Repo, chat_id: i64) -> Lang {
+    Lang::from_value(repo.get_option(&lang_option_name(chat_id)).await.ok().flatten().as_deref())
+}
+
+pub async fn set_chat_lang(repo: &Repo, chat_id: i64, lang: Lang) -> anyhow::Result<()> {
+    repo.set_option(&lang_option_name(chat_id), lang.value()).await?;
+    Ok(())
 }
 
 pub(crate) fn no_preview() -> LinkPreviewOptions {

@@ -1,6 +1,8 @@
-# flowerss-bot
+# tg-kl-vault
 
-A self-hostable Telegram RSS bot. This repository is a Rust rewrite of the original [`indes/flowerss-bot`](https://github.com/indes/flowerss-bot), keeping the existing SQLite database layout and Telegram command behavior as compatible as possible.
+A self-hostable Telegram RSS vault bot. This project was formerly named `flowerss-bot` and remains compatible with existing `flowerss-bot` SQLite data and deployment settings where possible.
+
+This repository is a Rust rewrite derived from the original [`indes/flowerss-bot`](https://github.com/indes/flowerss-bot), keeping the existing SQLite database layout and Telegram command behavior as compatible as possible.
 
 ## Features
 
@@ -22,14 +24,12 @@ A self-hostable Telegram RSS bot. This repository is a Rust rewrite of the origi
 /unsub [source_id]         退订RSS源
 /list                     已订阅的RSS源
 /set                      设置订阅
-/check                   检查当前订阅
+/settings                 设置（OPML 导入/导出、更新频率、语言）
+/check                    检查当前订阅
 /setfeedtag [id] [tags]    设置rss订阅标签
-/setinterval [min] [ids]   设置订阅刷新频率
 /unsuball                 取消所有订阅
 /activeall                开启抓取订阅更新
 /pauseall                 停止抓取所有订阅更新
-/import                   导入OPML文件
-/export                   导出OPML
 /ping                     health check
 /help                     帮助
 /version                  Bot 版本信息
@@ -41,7 +41,7 @@ A self-hostable Telegram RSS bot. This repository is a Rust rewrite of the origi
 
 Implemented:
 
-- Telegram command and callback dispatcher, including `/check` for manual subscription refresh.
+- Telegram command and callback dispatcher, including `/check` for manual subscription refresh and `/settings` for OPML, interval, and language actions.
 - SQLite migrations and repository methods.
 - Feed fetch/parse/dedup pipeline.
 - OPML import/export.
@@ -78,8 +78,8 @@ Recommended minimum:
 Clone the repository:
 
 ```bash
-git clone https://github.com/siygle/flowerss-bot.git
-cd flowerss-bot
+git clone https://github.com/siygle/tg-kl-vault.git
+cd tg-kl-vault
 ```
 
 ### 3. Configure by environment variables or config.toml
@@ -181,7 +181,7 @@ Behavior details:
 
 ### 5. Environment variable overrides
 
-Every config value can be supplied through environment variables with the `FLOWERSS_` prefix. Environment variables override `config.toml` and also work when no config file is mounted.
+Every config value can be supplied through environment variables with the `FLOWERSS_` prefix. The prefix is intentionally kept for deployment compatibility with existing flowerss-bot setups. Environment variables override `config.toml` and also work when no config file is mounted.
 
 | Env var | Config key | Example |
 |---|---|---|
@@ -252,25 +252,25 @@ docker compose up -d --build
 Build:
 
 ```bash
-docker build -t flowerss-bot:latest .
+docker build -t tg-kl-vault:latest .
 ```
 
 Run:
 
 ```bash
 docker run -d \
-  --name flowerss-bot \
+  --name tg-kl-vault \
   --restart unless-stopped \
   -e FLOWERSS_BOT_TOKEN="123456:telegram-bot-token" \
   -e FLOWERSS_SQLITE_PATH="/app/data/data.db" \
   -v "$PWD/data:/app/data" \
-  flowerss-bot:latest
+  tg-kl-vault:latest
 ```
 
 Logs:
 
 ```bash
-docker logs -f flowerss-bot
+docker logs -f tg-kl-vault
 ```
 
 ### 8. Run from source
@@ -303,7 +303,7 @@ If you run the release binary directly:
 
 ```ini
 [Unit]
-Description=flowerss-bot
+Description=tg-kl-vault
 After=network-online.target
 Wants=network-online.target
 

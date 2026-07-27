@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load(args.config.as_deref()).context("load config")?;
     init_tracing(&config.log.level)?;
 
-    info!(dry_run = args.dry_run, sqlite_path = %config.sqlite.path, "flowerss-bot starting");
+    info!(dry_run = args.dry_run, sqlite_path = %config.sqlite.path, "tg-kl-vault starting");
     println!(
         "config loaded: sqlite_path={} update_interval={} dry_run={}",
         config.sqlite.path, config.update_interval, args.dry_run

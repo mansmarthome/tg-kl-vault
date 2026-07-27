@@ -9,9 +9,9 @@ use tracing::warn;
 use crate::{
     bot::{
         callback::{decode_telebot_callback, Attachment, Button},
-        keyboard::feed_setting_keyboard,
+        keyboard::{feed_setting_keyboard, settings_keyboard},
         render::{render_feed_setting, FeedSettingData},
-        runtime::BotState,
+        runtime::{export_chat_opml, chat_lang, set_chat_lang, BotState, Lang},
     },
     config::ERROR_THRESHOLD,
     db::models::{Source, Subscribe},
@@ -26,6 +26,10 @@ pub async fn handle_callback(bot: Bot, query: CallbackQuery, state: Arc<BotState
     let Some(message) = query.regular_message() else { return Ok(()) };
     let chat_id = message.chat.id;
     let message_id = message.id;
+
+    if let Some(action) = data.strip_prefix("settings:") {
+        return handle_settings_callback(&bot, &query, &state, action, chat_id, message_id).await;
+    }
 
     let callback = match decode_telebot_callback(data) {
         Ok(callback) => callback,
@@ -75,6 +79,36 @@ async fn respond_toast(bot: &Bot, query: &CallbackQuery, text: &str) -> Response
 async fn edit_plain(bot: &Bot, chat_id: ChatId, message_id: MessageId, text: &str) -> ResponseResult<()> {
     bot.edit_message_text(chat_id, message_id, text).await?;
     Ok(())
+}
+
+async fn handle_settings_callback(
+    bot: &Bot,
+    query: &CallbackQuery,
+    state: &BotState,
+    action: &str,
+    chat_id: ChatId,
+    message_id: MessageId,
+) -> ResponseResult<()> {
+    let owner_id = chat_id.0;
+    let current_lang = chat_lang(&state.repo, owner_id).await;
+    match action {
+        "import" => respond_toast(bot, query, current_lang.import_hint()).await,
+        "export" => export_chat_opml(bot, chat_id, owner_id, state).await,
+        "setinterval" => edit_plain(bot, chat_id, message_id, current_lang.interval_hint()).await,
+        "lang:en" | "lang:zh-tw" => {
+            let lang = if action.ends_with("en") { Lang::En } else { Lang::ZhTw };
+            if let Err(err) = set_chat_lang(&state.repo, owner_id, lang).await {
+                warn!(owner_id, error = %err, "failed to set language");
+                return respond_toast(bot, query, "error").await;
+            }
+            respond_toast(bot, query, lang.lang_updated()).await?;
+            bot.edit_message_text(chat_id, message_id, lang.settings_title())
+                .reply_markup(settings_keyboard(lang))
+                .await?;
+            Ok(())
+        }
+        _ => respond_toast(bot, query, "error").await,
+    }
 }
 
 async fn render_and_edit_setting(

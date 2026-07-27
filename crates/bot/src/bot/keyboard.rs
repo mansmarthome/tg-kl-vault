@@ -1,5 +1,7 @@
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 
+use crate::bot::runtime::Lang;
+
 use crate::bot::callback::{encode_telebot_callback, Attachment, Button};
 
 /// One inline button per source, `[id] title`, used by both `/set` (feed
@@ -71,4 +73,18 @@ pub fn unsuball_confirm_keyboard() -> InlineKeyboardMarkup {
         InlineKeyboardButton::callback("确认", encode_telebot_callback(Button::UnsubAllConfirm, empty)),
         InlineKeyboardButton::callback("取消", encode_telebot_callback(Button::UnsubAllCancel, empty)),
     ]])
+}
+
+pub fn settings_keyboard(lang: Lang) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback(lang.settings_import_button(), "settings:import"),
+            InlineKeyboardButton::callback(lang.settings_export_button(), "settings:export"),
+        ],
+        vec![InlineKeyboardButton::callback(lang.settings_interval_button(), "settings:setinterval")],
+        vec![
+            InlineKeyboardButton::callback("English", "settings:lang:en"),
+            InlineKeyboardButton::callback("繁體中文", "settings:lang:zh-tw"),
+        ],
+    ])
 }

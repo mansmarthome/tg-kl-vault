@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::Parser;
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "flowerss-bot")]
-#[command(about = "Rust rewrite of flowerss Telegram RSS bot")]
+#[command(name = "tg-kl-vault")]
+#[command(about = "Self-hosted Telegram RSS vault bot; flowerss-bot compatible")]
 pub struct Args {
     /// Path to config TOML file.
     #[arg(short = 'c', long = "config")]

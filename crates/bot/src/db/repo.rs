@@ -211,6 +211,25 @@ impl Repo {
         Ok(result.rows_affected())
     }
 
+    pub async fn get_option(&self, name: &str) -> sqlx::Result<Option<String>> {
+        sqlx::query_scalar("SELECT value FROM options WHERE name = ? ORDER BY id DESC LIMIT 1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn set_option(&self, name: &str, value: &str) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO options (name, value, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \
+             ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(name)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn set_subscription_tag(&self, user_id: i64, source_id: i64, tag: &str) -> sqlx::Result<bool> {
         let result = sqlx::query(
             "UPDATE subscribes SET tag = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
