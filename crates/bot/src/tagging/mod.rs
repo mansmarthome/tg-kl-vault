@@ -3,6 +3,7 @@
 
 pub mod gemini;
 pub mod heuristic;
+pub mod mcp;
 pub mod metadata;
 pub mod quota;
 pub mod taxonomy;
@@ -13,6 +14,7 @@ use crate::config::{AiProvider, Config};
 
 use gemini::GeminiTagger;
 use heuristic::HeuristicTagger;
+use mcp::{McpClient, McpTagger};
 
 /// The text a tagger reasons over.
 pub struct TagInput<'a> {
@@ -35,6 +37,7 @@ pub trait Tagger: Send + Sync {
 pub enum AnyTagger {
     Gemini(GeminiTagger),
     Heuristic(HeuristicTagger),
+    Mcp(McpTagger),
 }
 
 impl Tagger for AnyTagger {
@@ -42,6 +45,7 @@ impl Tagger for AnyTagger {
         match self {
             Self::Gemini(t) => t.suggest(input).await,
             Self::Heuristic(t) => t.suggest(input).await,
+            Self::Mcp(t) => t.suggest(input).await,
         }
     }
 }
@@ -54,17 +58,18 @@ impl AnyTagger {
 }
 
 /// Builds the configured tagger. `provider = "auto"` picks Gemini when an
-/// api_key is present, otherwise the heuristic.
+/// api_key is present, otherwise the heuristic. `mcp` is explicit only.
 pub fn build_tagger(cfg: &Config) -> AnyTagger {
     let ai = &cfg.bookmark.ai;
-    let use_gemini = match ai.provider {
-        AiProvider::Gemini => true,
-        AiProvider::Heuristic => false,
-        AiProvider::Auto => !ai.api_key.is_empty(),
-    };
-    if use_gemini {
-        AnyTagger::Gemini(GeminiTagger::new(ai))
-    } else {
-        AnyTagger::Heuristic(HeuristicTagger::new(ai.max_tags as usize))
+    match ai.provider {
+        AiProvider::Mcp => AnyTagger::Mcp(McpTagger::new(
+            McpClient::from_config(ai.mcp.clone()),
+            ai.max_tags as usize,
+        )),
+        AiProvider::Gemini => AnyTagger::Gemini(GeminiTagger::new(ai)),
+        AiProvider::Auto if !ai.api_key.is_empty() => AnyTagger::Gemini(GeminiTagger::new(ai)),
+        AiProvider::Auto | AiProvider::Heuristic => {
+            AnyTagger::Heuristic(HeuristicTagger::new(ai.max_tags as usize))
+        }
     }
 }

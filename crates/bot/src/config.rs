@@ -97,6 +97,12 @@ impl Config {
         set_parse(&mut self.bookmark.ai.max_rpm, "FLOWERSS_BOOKMARK_AI_MAX_RPM")?;
         set_parse(&mut self.bookmark.ai.max_tags, "FLOWERSS_BOOKMARK_AI_MAX_TAGS")?;
         set_parse(&mut self.bookmark.ai.page_size, "FLOWERSS_BOOKMARK_AI_PAGE_SIZE")?;
+        set_string(&mut self.bookmark.ai.mcp.endpoint, "FLOWERSS_BOOKMARK_AI_MCP_ENDPOINT");
+        set_string(&mut self.bookmark.ai.mcp.token, "FLOWERSS_BOOKMARK_AI_MCP_TOKEN");
+        set_string(&mut self.bookmark.ai.mcp.cf_access_client_id, "FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_ID");
+        set_string(&mut self.bookmark.ai.mcp.cf_access_client_secret, "FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_SECRET");
+        set_parse(&mut self.bookmark.ai.mcp.timeout_seconds, "FLOWERSS_BOOKMARK_AI_MCP_TIMEOUT_SECONDS")?;
+        set_parse(&mut self.bookmark.ai.mcp.poll_interval_ms, "FLOWERSS_BOOKMARK_AI_MCP_POLL_INTERVAL_MS")?;
         // Convenience: honour a bare GEMINI_API_KEY when the namespaced one is
         // unset, so operators can use Google's standard env var name.
         if self.bookmark.ai.api_key.is_empty() {
@@ -244,6 +250,7 @@ pub struct AiConfig {
     pub max_rpm: u32,
     pub max_tags: u32,
     pub page_size: u32,
+    pub mcp: McpConfig,
 }
 
 impl Default for AiConfig {
@@ -257,6 +264,7 @@ impl Default for AiConfig {
             max_rpm: 10,
             max_tags: 3,
             page_size: 5,
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -272,6 +280,7 @@ impl std::fmt::Debug for AiConfig {
             .field("max_rpm", &self.max_rpm)
             .field("max_tags", &self.max_tags)
             .field("page_size", &self.page_size)
+            .field("mcp", &self.mcp)
             .finish()
     }
 }
@@ -294,6 +303,9 @@ pub enum AiProvider {
     Auto,
     Gemini,
     Heuristic,
+    /// Drive a remote agent over MCP (pi-mcp-bridge). Selected explicitly;
+    /// never chosen by `auto`. Heuristic remains the offline fallback.
+    Mcp,
 }
 
 impl std::str::FromStr for AiProvider {
@@ -304,8 +316,63 @@ impl std::str::FromStr for AiProvider {
             "auto" => Ok(Self::Auto),
             "gemini" => Ok(Self::Gemini),
             "heuristic" => Ok(Self::Heuristic),
-            _ => anyhow::bail!("expected auto, gemini, or heuristic"),
+            "mcp" => Ok(Self::Mcp),
+            _ => anyhow::bail!("expected auto, gemini, heuristic, or mcp"),
         }
+    }
+}
+
+/// `[bookmark.ai.mcp]` — connection to a Streamable-HTTP MCP bridge
+/// (pi-mcp-bridge) that drives a remote agent for tagging and summaries.
+///
+/// `token` and `cf_access_client_secret` are shell-grade credentials, redacted
+/// in the manual `Debug` impl below.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct McpConfig {
+    /// Full endpoint URL, e.g. `https://pi-mcp.example.com/mcp`.
+    pub endpoint: String,
+    /// Bearer token (mandatory server-side).
+    pub token: String,
+    /// Optional Cloudflare Access service-token headers.
+    pub cf_access_client_id: String,
+    pub cf_access_client_secret: String,
+    /// Overall per-call deadline (async job polling), seconds.
+    pub timeout_seconds: u64,
+    /// Poll interval for `pi_result`, milliseconds.
+    pub poll_interval_ms: u64,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            token: String::new(),
+            cf_access_client_id: String::new(),
+            cf_access_client_secret: String::new(),
+            timeout_seconds: 240,
+            poll_interval_ms: 1500,
+        }
+    }
+}
+
+impl McpConfig {
+    /// Whether the bridge is configured enough to use.
+    pub fn is_configured(&self) -> bool {
+        !self.endpoint.is_empty() && !self.token.is_empty()
+    }
+}
+
+impl std::fmt::Debug for McpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpConfig")
+            .field("endpoint", &self.endpoint)
+            .field("token", &redacted(&self.token))
+            .field("cf_access_client_id", &self.cf_access_client_id)
+            .field("cf_access_client_secret", &redacted(&self.cf_access_client_secret))
+            .field("timeout_seconds", &self.timeout_seconds)
+            .field("poll_interval_ms", &self.poll_interval_ms)
+            .finish()
     }
 }
 
@@ -357,6 +424,12 @@ mod tests {
             ("FLOWERSS_BOOKMARK_AI_MAX_RPM", "7"),
             ("FLOWERSS_BOOKMARK_AI_MAX_TAGS", "2"),
             ("FLOWERSS_BOOKMARK_AI_PAGE_SIZE", "9"),
+            ("FLOWERSS_BOOKMARK_AI_MCP_ENDPOINT", "https://pi.example/mcp"),
+            ("FLOWERSS_BOOKMARK_AI_MCP_TOKEN", "mcp-secret"),
+            ("FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_ID", "cf-id"),
+            ("FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_SECRET", "cf-secret"),
+            ("FLOWERSS_BOOKMARK_AI_MCP_TIMEOUT_SECONDS", "120"),
+            ("FLOWERSS_BOOKMARK_AI_MCP_POLL_INTERVAL_MS", "800"),
         ];
         for (key, value) in keys {
             std::env::set_var(key, value);
@@ -388,6 +461,13 @@ mod tests {
         assert_eq!(cfg.bookmark.ai.max_rpm, 7);
         assert_eq!(cfg.bookmark.ai.max_tags, 2);
         assert_eq!(cfg.bookmark.ai.page_size, 9);
+        assert_eq!(cfg.bookmark.ai.mcp.endpoint, "https://pi.example/mcp");
+        assert_eq!(cfg.bookmark.ai.mcp.token, "mcp-secret");
+        assert_eq!(cfg.bookmark.ai.mcp.cf_access_client_id, "cf-id");
+        assert_eq!(cfg.bookmark.ai.mcp.cf_access_client_secret, "cf-secret");
+        assert_eq!(cfg.bookmark.ai.mcp.timeout_seconds, 120);
+        assert_eq!(cfg.bookmark.ai.mcp.poll_interval_ms, 800);
+        assert!(cfg.bookmark.ai.mcp.is_configured());
 
         for (key, _) in keys {
             std::env::remove_var(key);
@@ -419,5 +499,20 @@ mod tests {
         let printed = format!("{cfg:?}");
         assert!(!printed.contains("super-secret"));
         assert!(printed.contains("<redacted>"));
+    }
+
+    #[test]
+    fn debug_config_never_prints_mcp_secrets() {
+        let cfg = McpConfig {
+            token: "tok-secret".to_owned(),
+            cf_access_client_secret: "cf-secret".to_owned(),
+            cf_access_client_id: "cf-id-visible".to_owned(),
+            ..McpConfig::default()
+        };
+        let printed = format!("{cfg:?}");
+        assert!(!printed.contains("tok-secret"));
+        assert!(!printed.contains("cf-secret"));
+        // The (non-secret) client id is fine to show.
+        assert!(printed.contains("cf-id-visible"));
     }
 }
