@@ -1,7 +1,13 @@
 pub mod models;
 pub mod repo;
 
-use sqlx::{migrate::Migrator, sqlite::SqlitePoolOptions, Executor, SqlitePool};
+use sqlx::{
+    migrate::Migrator,
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+    },
+    SqlitePool,
+};
 use std::{path::Path, time::Duration};
 
 static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
@@ -11,17 +17,23 @@ pub async fn connect(path: &str) -> anyhow::Result<SqlitePool> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let url = format!("sqlite://{path}?mode=rwc");
+    // PRAGMAs live on `SqliteConnectOptions`, not a one-shot `pool.execute`.
+    // `synchronous` is per-connection, so the old approach only configured one
+    // of the four pooled connections; the tag worker is a second concurrent
+    // writer, exactly the condition that turns that into sporadic SQLITE_BUSY.
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true);
+
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
         .acquire_timeout(Duration::from_secs(5))
-        .connect(&url)
+        .connect_with(options)
         .await?;
-
-    pool.execute("PRAGMA journal_mode = WAL").await?;
-    pool.execute("PRAGMA busy_timeout = 5000").await?;
-    pool.execute("PRAGMA foreign_keys = ON").await?;
-    pool.execute("PRAGMA synchronous = NORMAL").await?;
 
     MIGRATOR.run(&pool).await?;
     Ok(pool)

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use teloxide::{
     prelude::*,
     types::{ChatId, LinkPreviewOptions, ParseMode},
+    utils::command::BotCommands,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -10,7 +11,7 @@ use tracing::{info, warn};
 use crate::{
     bot::{
         callbacks::handle_callback,
-        commands::{Command, COMMANDS},
+        commands::Command,
         documents::handle_document,
         keyboard::{feed_item_list_keyboard, settings_keyboard, unsuball_confirm_keyboard},
         render::{render_html, render_markdown, MessageData},
@@ -151,10 +152,13 @@ pub async fn run_bot(
     fetcher: Fetcher,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    let commands = COMMANDS
-        .iter()
-        .filter(|(_, description)| !description.is_empty())
-        .map(|(command, description)| teloxide::types::BotCommand::new(*command, *description))
+    // Registered menu = the derive-generated list, minus deliberately hidden
+    // entries (empty description, e.g. /ping). Telegram rejects empty
+    // descriptions, and this keeps "add a command" a one-place change instead
+    // of "edit three places and break one test".
+    let commands = Command::bot_commands()
+        .into_iter()
+        .filter(|command| !command.description.is_empty())
         .collect::<Vec<_>>();
     bot.set_my_commands(commands).await?;
 
