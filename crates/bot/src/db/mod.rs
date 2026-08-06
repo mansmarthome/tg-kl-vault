@@ -1,3 +1,4 @@
+pub mod bookmarks;
 pub mod models;
 pub mod repo;
 
