@@ -28,3 +28,26 @@ level = "info"
 [fetch]
 concurrency = 8
 retention_days = 90
+
+# Bookmark AI auto-tagging.
+# provider = "auto" uses Gemini when api_key is set, else the local keyword
+# heuristic. Set it to "gemini" or "heuristic" to force one. The heuristic
+# always works offline and needs no key.
+#
+# daily_quota / max_rpm are CONSERVATIVE GUARDS, not official figures: Google no
+# longer publishes per-model free-tier numbers (the rate-limits page redirects
+# to your AI Studio quota). Check your real quota in AI Studio and adjust. The
+# authoritative protection is the 429 latch in the client, and the offline
+# heuristic is the final, never-failing fallback.
+#
+# The API key can also come from env: FLOWERSS_BOOKMARK_AI_API_KEY, or a bare
+# GEMINI_API_KEY. Every field has a FLOWERSS_BOOKMARK_AI_* env override.
+[bookmark.ai]
+provider    = "auto"                  # "auto" | "gemini" | "heuristic"
+api_key     = ""
+model       = "gemini-3.1-flash-lite"
+endpoint    = "https://generativelanguage.googleapis.com"
+daily_quota = 200                     # conservative soft guard, not official
+max_rpm     = 10                      # conservative soft guard, not official
+max_tags    = 3
+page_size   = 5
