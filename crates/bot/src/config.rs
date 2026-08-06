@@ -31,6 +31,7 @@ pub struct Config {
     pub telegram: TelegramConfig,
     pub log: LogConfig,
     pub fetch: FetchConfig,
+    pub bookmark: BookmarkConfig,
 }
 
 impl Default for Config {
@@ -54,6 +55,7 @@ impl Default for Config {
             telegram: TelegramConfig::default(),
             log: LogConfig::default(),
             fetch: FetchConfig::default(),
+            bookmark: BookmarkConfig::default(),
         }
     }
 }
@@ -87,6 +89,19 @@ impl Config {
         set_string(&mut self.log.level, "FLOWERSS_LOG_LEVEL");
         set_parse(&mut self.fetch.concurrency, "FLOWERSS_FETCH_CONCURRENCY")?;
         set_parse(&mut self.fetch.retention_days, "FLOWERSS_FETCH_RETENTION_DAYS")?;
+        set_parse(&mut self.bookmark.ai.provider, "FLOWERSS_BOOKMARK_AI_PROVIDER")?;
+        set_string(&mut self.bookmark.ai.api_key, "FLOWERSS_BOOKMARK_AI_API_KEY");
+        set_string(&mut self.bookmark.ai.model, "FLOWERSS_BOOKMARK_AI_MODEL");
+        set_string(&mut self.bookmark.ai.endpoint, "FLOWERSS_BOOKMARK_AI_ENDPOINT");
+        set_parse(&mut self.bookmark.ai.daily_quota, "FLOWERSS_BOOKMARK_AI_DAILY_QUOTA")?;
+        set_parse(&mut self.bookmark.ai.max_rpm, "FLOWERSS_BOOKMARK_AI_MAX_RPM")?;
+        set_parse(&mut self.bookmark.ai.max_tags, "FLOWERSS_BOOKMARK_AI_MAX_TAGS")?;
+        set_parse(&mut self.bookmark.ai.page_size, "FLOWERSS_BOOKMARK_AI_PAGE_SIZE")?;
+        // Convenience: honour a bare GEMINI_API_KEY when the namespaced one is
+        // unset, so operators can use Google's standard env var name.
+        if self.bookmark.ai.api_key.is_empty() {
+            set_string(&mut self.bookmark.ai.api_key, "GEMINI_API_KEY");
+        }
         Ok(())
     }
 }
@@ -205,6 +220,95 @@ impl Default for FetchConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct BookmarkConfig {
+    pub ai: AiConfig,
+}
+
+/// AI auto-tagging settings, `[bookmark.ai]`.
+///
+/// Note: `Config` derives `Eq` and is cloned widely — no `f32` fields here
+/// (temperature is hardcoded in the Gemini client). `api_key` is redacted in
+/// the manual `Debug` impl below so a stray `{:?}` never logs it.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AiConfig {
+    pub provider: AiProvider,
+    pub api_key: String,
+    pub model: String,
+    pub endpoint: String,
+    /// Conservative soft guard, NOT an official figure — Google no longer
+    /// publishes per-model free-tier numbers. The 429 latch is authoritative.
+    pub daily_quota: u32,
+    pub max_rpm: u32,
+    pub max_tags: u32,
+    pub page_size: u32,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            provider: AiProvider::Auto,
+            api_key: String::new(),
+            model: "gemini-3.1-flash-lite".to_owned(),
+            endpoint: "https://generativelanguage.googleapis.com".to_owned(),
+            daily_quota: 200,
+            max_rpm: 10,
+            max_tags: 3,
+            page_size: 5,
+        }
+    }
+}
+
+impl std::fmt::Debug for AiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AiConfig")
+            .field("provider", &self.provider)
+            .field("api_key", &redacted(&self.api_key))
+            .field("model", &self.model)
+            .field("endpoint", &self.endpoint)
+            .field("daily_quota", &self.daily_quota)
+            .field("max_rpm", &self.max_rpm)
+            .field("max_tags", &self.max_tags)
+            .field("page_size", &self.page_size)
+            .finish()
+    }
+}
+
+fn redacted(value: &str) -> &'static str {
+    if value.is_empty() {
+        "<unset>"
+    } else {
+        "<redacted>"
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AiProvider {
+    /// Gemini when an api_key is present, otherwise the local heuristic. The
+    /// default: a config set to `"gemini"` that silently falls back to
+    /// heuristic would be a config that lies.
+    #[default]
+    Auto,
+    Gemini,
+    Heuristic,
+}
+
+impl std::str::FromStr for AiProvider {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "gemini" => Ok(Self::Gemini),
+            "heuristic" => Ok(Self::Heuristic),
+            _ => anyhow::bail!("expected auto, gemini, or heuristic"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +349,14 @@ mod tests {
             ("FLOWERSS_LOG_LEVEL", "debug"),
             ("FLOWERSS_FETCH_CONCURRENCY", "3"),
             ("FLOWERSS_FETCH_RETENTION_DAYS", "14"),
+            ("FLOWERSS_BOOKMARK_AI_PROVIDER", "gemini"),
+            ("FLOWERSS_BOOKMARK_AI_API_KEY", "secret-key"),
+            ("FLOWERSS_BOOKMARK_AI_MODEL", "gemini-x"),
+            ("FLOWERSS_BOOKMARK_AI_ENDPOINT", "https://gen.example"),
+            ("FLOWERSS_BOOKMARK_AI_DAILY_QUOTA", "42"),
+            ("FLOWERSS_BOOKMARK_AI_MAX_RPM", "7"),
+            ("FLOWERSS_BOOKMARK_AI_MAX_TAGS", "2"),
+            ("FLOWERSS_BOOKMARK_AI_PAGE_SIZE", "9"),
         ];
         for (key, value) in keys {
             std::env::set_var(key, value);
@@ -268,9 +380,44 @@ mod tests {
         assert_eq!(cfg.log.level, "debug");
         assert_eq!(cfg.fetch.concurrency, 3);
         assert_eq!(cfg.fetch.retention_days, 14);
+        assert_eq!(cfg.bookmark.ai.provider, AiProvider::Gemini);
+        assert_eq!(cfg.bookmark.ai.api_key, "secret-key");
+        assert_eq!(cfg.bookmark.ai.model, "gemini-x");
+        assert_eq!(cfg.bookmark.ai.endpoint, "https://gen.example");
+        assert_eq!(cfg.bookmark.ai.daily_quota, 42);
+        assert_eq!(cfg.bookmark.ai.max_rpm, 7);
+        assert_eq!(cfg.bookmark.ai.max_tags, 2);
+        assert_eq!(cfg.bookmark.ai.page_size, 9);
 
         for (key, _) in keys {
             std::env::remove_var(key);
         }
+    }
+
+    #[test]
+    fn bare_gemini_api_key_is_a_fallback_when_namespaced_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("GEMINI_API_KEY", "bare-key");
+        let cfg = Config::load(None).unwrap();
+        assert_eq!(cfg.bookmark.ai.api_key, "bare-key");
+
+        // Namespaced key wins over the bare fallback.
+        std::env::set_var("FLOWERSS_BOOKMARK_AI_API_KEY", "ns-key");
+        let cfg = Config::load(None).unwrap();
+        assert_eq!(cfg.bookmark.ai.api_key, "ns-key");
+
+        std::env::remove_var("GEMINI_API_KEY");
+        std::env::remove_var("FLOWERSS_BOOKMARK_AI_API_KEY");
+    }
+
+    #[test]
+    fn debug_config_never_prints_api_key() {
+        let cfg = AiConfig {
+            api_key: "super-secret".to_owned(),
+            ..AiConfig::default()
+        };
+        let printed = format!("{cfg:?}");
+        assert!(!printed.contains("super-secret"));
+        assert!(printed.contains("<redacted>"));
     }
 }
