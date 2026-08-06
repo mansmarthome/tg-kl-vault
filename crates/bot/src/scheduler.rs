@@ -195,6 +195,16 @@ where
             .chat_ids_with_option_off(crate::bot::bookmarks::BM_BTN_PREFIX)
             .await
             .unwrap_or_default();
+        // The 📝 summary button only exists when an MCP bridge is configured.
+        let summary_configured = self.config.bookmark.ai.mcp.is_configured();
+        let sum_off = if summary_configured {
+            self.repo
+                .chat_ids_with_option_off(crate::bot::bookmarks::BM_SUM_PREFIX)
+                .await
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
 
         let item_data = ItemForChat {
             source_title: source.title.as_deref().unwrap_or(""),
@@ -214,8 +224,9 @@ where
                 tag: sub.tag.as_deref().unwrap_or(""),
             };
             let bookmark_button = !bm_off.contains(&user_id);
+            let summary_button = summary_configured && !sum_off.contains(&user_id);
 
-            match send_item_to_chat(&self.sender, &self.config, user_id, &item_data, &sub_opts, bookmark_button).await {
+            match send_item_to_chat(&self.sender, &self.config, user_id, &item_data, &sub_opts, bookmark_button, summary_button).await {
                 Ok(SendOutcome::Sent) => {}
                 Ok(SendOutcome::Forbidden) => {
                     warn!(source_id = source.id, user_id, hash_id, "broadcast forbidden; subscription kept");

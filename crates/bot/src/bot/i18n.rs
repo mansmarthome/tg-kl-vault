@@ -96,6 +96,10 @@ strings! {
     bm_tag_index_header => en: "🏷 <b>Tags</b>", zh: "🏷 <b>標籤</b>";
     bm_toggle_hint => en: "Tap to toggle tags:", zh: "點選以切換標籤：";
     bm_added => en: "🔖 Bookmarked.", zh: "🔖 已收藏。";
+    bm_summarizing => en: "📝 Summarizing…", zh: "📝 摘要產生中…";
+    bm_summary_failed => en: "Summary failed.", zh: "摘要失敗。";
+    bm_summary_unavailable => en: "AI summary is not configured.", zh: "尚未設定 AI 摘要。";
+    bm_summary_heading => en: "📝 <b>Summary</b>", zh: "📝 <b>摘要</b>";
 }
 
 impl Lang {
@@ -129,6 +133,14 @@ impl Lang {
         match self {
             Self::En => format!("🤖 AI auto-tagging: {state}"),
             Self::ZhTw => format!("🤖 AI 自動標籤：{state}"),
+        }
+    }
+
+    pub fn bm_settings_summary_toggle(self, on: bool) -> String {
+        let state = self.on_off(on);
+        match self {
+            Self::En => format!("📝 Summary button: {state}"),
+            Self::ZhTw => format!("📝 摘要按鈕：{state}"),
         }
     }
 

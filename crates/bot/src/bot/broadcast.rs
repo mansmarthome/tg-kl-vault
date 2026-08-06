@@ -2,7 +2,7 @@
 //! the manual `/check` pipeline call `send_item_to_chat`, so the 🔖 button (and
 //! anything else on the send path) can't end up wired to only one of them.
 
-use crate::bot::bookmarks::add_button_markup;
+use crate::bot::bookmarks::{item_keyboard, BmBtn};
 use crate::bot::render::{render_html, render_markdown, MessageData};
 use crate::bot::sender::{MessageSender, SendOptions, SendOutcome};
 use crate::config::{Config, MessageMode};
@@ -35,6 +35,7 @@ pub async fn send_item_to_chat<S: MessageSender>(
     item: &ItemForChat<'_>,
     sub: &SubOptions<'_>,
     bookmark_button: bool,
+    summary_button: bool,
 ) -> anyhow::Result<SendOutcome> {
     let preview_text = trim_description(item.description, config.preview_text);
     let enable_telegraph = sub.enable_telegraph && item.telegraph_url.is_some();
@@ -56,6 +57,8 @@ pub async fn send_item_to_chat<S: MessageSender>(
         disable_notification: !sub.enable_notification,
         parse_mode: config.message_mode,
     };
-    let markup = bookmark_button.then(|| add_button_markup(item.hash_id));
+    let bm = bookmark_button.then(|| BmBtn::Add(item.hash_id.to_owned()));
+    let sum = summary_button.then_some(item.hash_id);
+    let markup = item_keyboard(bm, sum);
     sender.send_text(chat_id, &text, options, markup).await
 }

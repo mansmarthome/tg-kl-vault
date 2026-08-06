@@ -359,6 +359,16 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
         .chat_ids_with_option_off(crate::bot::bookmarks::BM_BTN_PREFIX)
         .await
         .unwrap_or_default();
+    let summary_configured = state.config.bookmark.ai.mcp.is_configured();
+    let sum_off = if summary_configured {
+        state
+            .repo
+            .chat_ids_with_option_off(crate::bot::bookmarks::BM_SUM_PREFIX)
+            .await
+            .unwrap_or_default()
+    } else {
+        std::collections::HashSet::new()
+    };
 
     for sub in sources {
         let Some(source_id) = sub.source_id else {
@@ -467,6 +477,7 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
                         tag: sub.tag.as_deref().unwrap_or(""),
                     };
                     let bookmark_button = !bm_off.contains(&chat_id);
+                    let summary_button = summary_configured && !sum_off.contains(&chat_id);
                     let _ = send_item_to_chat(
                         &sender,
                         &state.config,
@@ -474,6 +485,7 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
                         &item_data,
                         &sub_opts,
                         bookmark_button,
+                        summary_button,
                     )
                     .await;
                     new_count += 1;

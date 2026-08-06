@@ -144,8 +144,18 @@ impl<T: Tagger, E: MessageEditor> TagWorker<T, E> {
 
         // 6. Edit — never retried.
         let outcome = if fresh.notify_kind == 1 {
+            // Relabel the 🔖 button with the tags, keeping the 📝 summary
+            // button (keyed by the content hash) if it's enabled for this chat.
             let label = render::button_tag_label(&tags, lang.bm_saved_button());
-            let markup = bookmarks::view_button_markup(fresh.id, label);
+            let sum = bookmarks::summary_enabled_raw(&self.repo, &self.config, fresh.chat_id)
+                .await
+                .then_some(fresh.content_hash_id.as_deref())
+                .flatten();
+            let markup = bookmarks::item_keyboard(
+                Some(bookmarks::BmBtn::Saved { id: fresh.id, label }),
+                sum,
+            )
+            .unwrap_or_default();
             self.editor.edit_markup(fresh.chat_id, message_id, markup).await
         } else {
             let text = render::render_detail(&fresh, &tags, lang);

@@ -5,17 +5,21 @@ use teloxide::{
     prelude::*,
     types::{
         InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageEntityKind, MessageId,
-        ParseMode,
+        ParseMode, ReplyParameters,
     },
+    utils::html::escape,
     ApiError, RequestError,
 };
 
 use crate::bookmark::render::{self, ListPageData, RenderedBookmark};
+use crate::tagging::mcp::McpClient;
 use crate::bot::i18n::Lang;
 use crate::bot::pagination::{nav_row, Page};
 use crate::bot::runtime::{chat_lang, no_preview, to_request_error, BotState};
+use crate::config::Config;
 use crate::db::bookmarks::{now_unix, NewBookmark};
 use crate::db::models::Bookmark;
+use crate::db::repo::Repo;
 use crate::tagging::taxonomy;
 use crate::tagging::url_norm::normalize_url;
 
@@ -24,6 +28,7 @@ const NOTE_MAX_CHARS: usize = 1000;
 
 pub const BM_BTN_PREFIX: &str = "tg-kl-vault:bmbtn:";
 pub const BM_AI_PREFIX: &str = "tg-kl-vault:bmai:";
+pub const BM_SUM_PREFIX: &str = "tg-kl-vault:bmsum:";
 
 fn bm_btn_key(chat_id: i64) -> String {
     format!("{BM_BTN_PREFIX}{chat_id}")
@@ -31,10 +36,25 @@ fn bm_btn_key(chat_id: i64) -> String {
 fn bm_ai_key(chat_id: i64) -> String {
     format!("{BM_AI_PREFIX}{chat_id}")
 }
+fn bm_sum_key(chat_id: i64) -> String {
+    format!("{BM_SUM_PREFIX}{chat_id}")
+}
 
 /// Opt-out options default to on: a missing/`"1"` row is on, `"0"` is off.
 async fn option_on(state: &BotState, key: &str) -> bool {
     state.repo.get_option(key).await.ok().flatten().as_deref() != Some("0")
+}
+
+/// The 📝 summary button is available when a bridge is configured and the chat
+/// hasn't opted out. Used by handlers (which have `BotState`).
+pub async fn summary_enabled(state: &BotState, chat_id: i64) -> bool {
+    summary_enabled_raw(&state.repo, &state.config, chat_id).await
+}
+
+/// Same check for callers without a `BotState` (the tag worker).
+pub async fn summary_enabled_raw(repo: &Repo, cfg: &Config, chat_id: i64) -> bool {
+    cfg.bookmark.ai.mcp.is_configured()
+        && repo.get_option(&bm_sum_key(chat_id)).await.ok().flatten().as_deref() != Some("0")
 }
 
 // ─── Scope (list filter, encoded into callback_data) ────────────────────────
@@ -78,6 +98,9 @@ pub mod cb {
     pub fn add(hash: &str) -> String {
         format!("bm:add:{hash}")
     }
+    pub fn sum(hash: &str) -> String {
+        format!("bm:sum:{hash}")
+    }
     pub fn list(scope: Scope, page: usize) -> String {
         format!("bm:list:{}:{page}", scope.to_wire())
     }
@@ -109,18 +132,30 @@ pub mod cb {
 
 // ─── Keyboards ──────────────────────────────────────────────────────────────
 
-/// The 🔖 button attached to a pushed item (`bm:add:<hash8>`).
-pub fn add_button_markup(hash: &str) -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback("🔖", cb::add(hash))]])
+/// State of the bookmark button on a pushed item: not-yet-saved (`bm:add`) or
+/// already saved (points at the detail page, label carries tags / "saved").
+pub enum BmBtn {
+    Add(String),
+    Saved { id: i64, label: String },
 }
 
-/// A single button pointing at a bookmark's detail page (used after saving and
-/// after tagging relabels it).
-pub fn view_button_markup(id: i64, label: impl Into<String>) -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-        label,
-        cb::view(id, Scope::All, 0),
-    )]])
+/// The inline keyboard for a pushed item: an optional 🔖/saved button and an
+/// optional 📝 summary button, sharing one row. Emoji-only labels so no
+/// per-chat language lookup is needed on the broadcast path. `None` when both
+/// are absent (so callers send no `reply_markup`).
+pub fn item_keyboard(bm: Option<BmBtn>, sum_hash: Option<&str>) -> Option<InlineKeyboardMarkup> {
+    let mut row: Vec<InlineKeyboardButton> = Vec::new();
+    match &bm {
+        Some(BmBtn::Add(hash)) => row.push(InlineKeyboardButton::callback("🔖", cb::add(hash))),
+        Some(BmBtn::Saved { id, label }) => {
+            row.push(InlineKeyboardButton::callback(label.clone(), cb::view(*id, Scope::All, 0)))
+        }
+        None => {}
+    }
+    if let Some(hash) = sum_hash {
+        row.push(InlineKeyboardButton::callback("📝", cb::sum(hash)));
+    }
+    (!row.is_empty()).then(|| InlineKeyboardMarkup::new(vec![row]))
 }
 
 fn list_keyboard(items: &[Bookmark], page: &Page, scope: Scope, lang: Lang) -> InlineKeyboardMarkup {
@@ -220,13 +255,27 @@ fn tags_index_keyboard(counts: &[(String, i64)], untagged: i64, lang: Lang) -> I
     InlineKeyboardMarkup::new(rows)
 }
 
-pub fn settings_bm_keyboard(lang: Lang, btn_on: bool, ai_on: bool) -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![
+/// `sum_on` is `Some(state)` only when an MCP bridge is configured; `None`
+/// hides the summary-button toggle entirely.
+pub fn settings_bm_keyboard(
+    lang: Lang,
+    btn_on: bool,
+    ai_on: bool,
+    sum_on: Option<bool>,
+) -> InlineKeyboardMarkup {
+    let mut rows = vec![
         vec![InlineKeyboardButton::callback(lang.bm_settings_btn_toggle(btn_on), "settings:bm:btn")],
         vec![InlineKeyboardButton::callback(lang.bm_settings_ai_toggle(ai_on), "settings:bm:ai")],
-        vec![InlineKeyboardButton::callback(lang.bm_settings_export(), "settings:bm:export")],
-        vec![InlineKeyboardButton::callback(lang.settings_back_button(), "settings:back")],
-    ])
+    ];
+    if let Some(on) = sum_on {
+        rows.push(vec![InlineKeyboardButton::callback(
+            lang.bm_settings_summary_toggle(on),
+            "settings:bm:sum",
+        )]);
+    }
+    rows.push(vec![InlineKeyboardButton::callback(lang.bm_settings_export(), "settings:bm:export")]);
+    rows.push(vec![InlineKeyboardButton::callback(lang.settings_back_button(), "settings:back")]);
+    InlineKeyboardMarkup::new(rows)
 }
 
 // ─── URL extraction from a message (entities first, naive scan last) ─────────
@@ -615,6 +664,7 @@ pub async fn handle_bm_callback(
     let parts: Vec<&str> = rest.split(':').collect();
     match parts.as_slice() {
         ["add", hash] => handle_add(bot, query, state, hash, chat_id, message_id, lang).await,
+        ["sum", hash] => handle_summary(bot, query, state, hash, chat_id, message_id, lang).await,
         ["list", scope, page] => {
             let (Some(scope), Ok(page)) = (Scope::parse(scope), page.parse::<usize>()) else {
                 return toast(bot, query, lang.bm_bad_action()).await;
@@ -815,11 +865,73 @@ async fn handle_add(
     state.repo.set_bookmark_notify(id, message_id.0 as i64).await.map_err(to_request_error)?;
 
     toast(bot, query, lang.bm_saved_toast()).await?;
-    // Relabel the button to "saved → view". The worker relabels again to the
-    // tags once tagging finishes. Correctness never depends on the label; the
-    // DB row is the source of truth.
-    let markup = view_button_markup(id, lang.bm_saved_button());
-    let _ = bot.edit_message_reply_markup(chat_id, message_id).reply_markup(markup).await;
+    // Relabel to "saved → view", keeping the 📝 summary button if enabled. The
+    // worker relabels again to the tags once tagging finishes. Correctness
+    // never depends on the label; the DB row is the source of truth.
+    let sum = summary_enabled(state, chat_id.0).await.then_some(hash);
+    if let Some(markup) = item_keyboard(
+        Some(BmBtn::Saved { id, label: lang.bm_saved_button().to_owned() }),
+        sum,
+    ) {
+        let _ = bot.edit_message_reply_markup(chat_id, message_id).reply_markup(markup).await;
+    }
+    Ok(())
+}
+
+/// 📝 button: summarize the article via the MCP agent. Because a summary can be
+/// slow (async agent turn), we answer the callback immediately and do the work
+/// in a spawned task that replies when ready — never blocking the ~15s callback
+/// budget.
+async fn handle_summary(
+    bot: &Bot,
+    query: &CallbackQuery,
+    state: &BotState,
+    hash: &str,
+    chat_id: ChatId,
+    message_id: MessageId,
+    lang: Lang,
+) -> ResponseResult<()> {
+    if !state.config.bookmark.ai.mcp.is_configured() {
+        return toast(bot, query, lang.bm_summary_unavailable()).await;
+    }
+    if !user_allowed(state, query.from.id.0 as i64) {
+        return toast(bot, query, lang.bm_no_permission()).await;
+    }
+    let Some(content) = state.repo.content_by_hash(hash).await.map_err(to_request_error)? else {
+        return toast(bot, query, lang.bm_expired()).await;
+    };
+    let Some(url) = content.raw_link.filter(|s| !s.is_empty()) else {
+        return toast(bot, query, lang.bm_expired()).await;
+    };
+
+    toast(bot, query, lang.bm_summarizing()).await?;
+
+    // Reuse the fetcher's HTTP client (proxy/timeout policy) for the MCP calls.
+    let client = McpClient::new(state.fetcher.client().clone(), state.config.bookmark.ai.mcp.clone());
+    let bot = bot.clone();
+    tokio::spawn(async move {
+        let language = match lang {
+            Lang::ZhTw => "Traditional Chinese",
+            Lang::En => "English",
+        };
+        let prompt = format!(
+            "Fetch the article at {url} and write a concise summary of about 5 short \
+             sentences in {language}. Output only the summary text — no preamble, no markdown.",
+        );
+        let reply = match client.run(&prompt).await {
+            Ok(text) if !text.trim().is_empty() => {
+                let body: String = text.trim().chars().take(3500).collect();
+                format!("{}\n\n{}", lang.bm_summary_heading(), escape(&body))
+            }
+            Ok(_) | Err(_) => lang.bm_summary_failed().to_owned(),
+        };
+        let _ = bot
+            .send_message(chat_id, reply)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(no_preview())
+            .reply_parameters(ReplyParameters::new(message_id))
+            .await;
+    });
     Ok(())
 }
 
@@ -849,6 +961,11 @@ pub async fn handle_settings_bm(
             render_settings_bm(bot, state, chat_id, message_id, lang).await?;
             ack(bot, query).await
         }
+        "bm:sum" => {
+            toggle_option(state, &bm_sum_key(chat_id.0)).await.map_err(to_request_error)?;
+            render_settings_bm(bot, state, chat_id, message_id, lang).await?;
+            ack(bot, query).await
+        }
         "bm:export" => {
             export_bookmarks(bot, state, chat_id, lang).await?;
             ack(bot, query).await
@@ -866,9 +983,14 @@ async fn render_settings_bm(
 ) -> ResponseResult<()> {
     let btn_on = option_on(state, &bm_btn_key(chat_id.0)).await;
     let ai_on = option_on(state, &bm_ai_key(chat_id.0)).await;
+    let sum_on = if state.config.bookmark.ai.mcp.is_configured() {
+        Some(option_on(state, &bm_sum_key(chat_id.0)).await)
+    } else {
+        None
+    };
     let result = bot
         .edit_message_text(chat_id, message_id, lang.bm_settings_button())
-        .reply_markup(settings_bm_keyboard(lang, btn_on, ai_on))
+        .reply_markup(settings_bm_keyboard(lang, btn_on, ai_on, sum_on))
         .await;
     if let Err(err) = result {
         if !is_benign_edit_error(&err) {
@@ -926,6 +1048,28 @@ mod tests {
     }
 
     #[test]
+    fn item_keyboard_combines_bookmark_and_summary_buttons() {
+        // Both buttons → one row of two.
+        let both = item_keyboard(Some(BmBtn::Add("abc".into())), Some("abc")).unwrap();
+        assert_eq!(both.inline_keyboard[0].len(), 2);
+        // Bookmark only.
+        let one = item_keyboard(Some(BmBtn::Add("abc".into())), None).unwrap();
+        assert_eq!(one.inline_keyboard[0].len(), 1);
+        // Summary only.
+        let sum = item_keyboard(None, Some("abc")).unwrap();
+        assert_eq!(sum.inline_keyboard[0].len(), 1);
+        // Neither → no keyboard at all.
+        assert!(item_keyboard(None, None).is_none());
+    }
+
+    #[test]
+    fn settings_summary_row_hidden_when_mcp_unconfigured() {
+        let with = settings_bm_keyboard(Lang::ZhTw, true, true, Some(true));
+        let without = settings_bm_keyboard(Lang::ZhTw, true, true, None);
+        assert_eq!(with.inline_keyboard.len(), without.inline_keyboard.len() + 1);
+    }
+
+    #[test]
     fn all_worst_case_payloads_fit_64_ascii_bytes() {
         let big = i64::MAX; // 19 digits
         let idx = taxonomy::TAGS.len() - 1; // widest index
@@ -933,6 +1077,7 @@ mod tests {
         let page = 9999usize;
         let payloads = vec![
             cb::add("ffffffff"),
+            cb::sum("ffffffff"),
             cb::list(scope, page),
             cb::view(big, scope, page),
             cb::del(big, scope, page),
