@@ -2,6 +2,7 @@ pub mod callback;
 pub mod callbacks;
 pub mod commands;
 pub mod documents;
+pub mod i18n;
 pub mod keyboard;
 pub mod render;
 pub mod runtime;
