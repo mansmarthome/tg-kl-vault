@@ -33,8 +33,27 @@ pub enum Command {
     Help,
     #[command(description = "Bot 版本信息")]
     Version,
+    // Bookmarks — appended after the frozen Go-parity 14 (never inserted).
+    #[command(description = "收藏網址")]
+    Bm(String),
+    #[command(description = "查看書籤")]
+    Bookmarks,
+    #[command(description = "搜尋書籤")]
+    Bmsearch(String),
+    // Hidden (empty description, like /ping): typeable but not in the menu.
+    // Their real UI is the 📝/🏷/🗑 buttons; these are for power users.
+    #[command(description = "")]
+    Bmnote(String),
+    #[command(description = "")]
+    Bmtag(String),
+    #[command(description = "")]
+    Bmdel(String),
 }
 
+/// The 14 commands the Go version shipped, frozen as a Go-parity golden. New
+/// commands (bookmarks) are appended to the `Command` enum, never inserted into
+/// this list; the test below pins that the derived menu *begins* with exactly
+/// these, in this order.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("start", "开始使用"),
     ("sub", "订阅RSS源"),
@@ -56,28 +75,27 @@ pub const COMMANDS: &[(&str, &str)] = &[
 mod tests {
     use super::*;
 
+    /// The derived command list must begin with exactly the frozen 14 Go-parity
+    /// commands, in order (names and descriptions). Anything new lands after.
     #[test]
-    fn command_list_matches_overview() {
-        let names = COMMANDS.iter().map(|(name, _)| *name).collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            vec![
-                "start",
-                "sub",
-                "unsub",
-                "list",
-                "set",
-                "settings",
-                "check",
-                "setfeedtag",
-                "unsuball",
-                "activeall",
-                "pauseall",
-                "ping",
-                "help",
-                "version",
-            ]
+    fn derived_commands_begin_with_frozen_go_parity_set() {
+        let derived = Command::bot_commands()
+            .into_iter()
+            .map(|c| {
+                (
+                    c.command.trim_start_matches('/').to_string(),
+                    c.description,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            derived.len() >= COMMANDS.len(),
+            "derived list unexpectedly shorter than the frozen set"
         );
-        assert!(names.contains(&"check"));
+        for (i, (name, desc)) in COMMANDS.iter().enumerate() {
+            assert_eq!(derived[i].0, *name, "command name drift at index {i}");
+            assert_eq!(derived[i].1, *desc, "command description drift at index {i}");
+        }
     }
 }

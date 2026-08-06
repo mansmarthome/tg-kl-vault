@@ -1,3 +1,4 @@
+pub mod bookmark;
 pub mod bot;
 pub mod cli;
 pub mod config;
@@ -7,3 +8,4 @@ pub mod opml;
 pub mod preview;
 pub mod ratelimit;
 pub mod scheduler;
+pub mod tagging;

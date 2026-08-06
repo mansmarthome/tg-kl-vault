@@ -3,21 +3,23 @@ use std::sync::Arc;
 use teloxide::{
     prelude::*,
     types::{ChatId, LinkPreviewOptions, ParseMode},
+    utils::command::BotCommands,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::{
     bot::{
+        bookmarks,
+        broadcast::{send_item_to_chat, ItemForChat, SubOptions},
         callbacks::handle_callback,
-        commands::{Command, COMMANDS},
+        commands::Command,
         documents::handle_document,
         keyboard::{feed_item_list_keyboard, settings_keyboard, unsuball_confirm_keyboard},
-        render::{render_html, render_markdown, MessageData},
-        sender::{MessageSender, SendOptions, TeloxideSender},
+        sender::TeloxideSender,
         subscribe::create_source,
     },
-    config::{Config, MessageMode},
+    config::Config,
     db::{models::Content, repo::Repo},
     feed::{
         fetch::{FetchOutcome, Fetcher},
@@ -25,114 +27,10 @@ use crate::{
         parse::parse_feed,
     },
     opml::{export_opml, OpmlSource},
-    preview::{trim_description, PreviewPublisher, PublishRequest, TelegraphPublisher},
+    preview::{PreviewPublisher, PublishRequest, TelegraphPublisher},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lang {
-    En,
-    ZhTw,
-}
-
-impl Lang {
-    pub fn from_value(value: Option<&str>) -> Self {
-        match value {
-            Some("en") => Self::En,
-            _ => Self::ZhTw,
-        }
-    }
-
-    pub fn value(self) -> &'static str {
-        match self {
-            Self::En => "en",
-            Self::ZhTw => "zh-tw",
-        }
-    }
-
-    fn help(self) -> &'static str {
-        match self {
-            Self::En => "Commands:\n/sub Subscribe to an RSS feed\n/unsub Unsubscribe\n/list Show subscriptions\n/set Feed settings\n/settings Bot settings\n/check Check current subscriptions\n/activeall Enable all subscriptions\n/pauseall Pause all subscriptions\n/unsuball Remove all subscriptions\n/help Help\n/version Bot version",
-            Self::ZhTw => "命令：\n/sub 訂閱 RSS 源\n/unsub 取消訂閱\n/list 查看目前訂閱源\n/set 設定訂閱\n/settings Bot 設定\n/check 檢查目前訂閱\n/activeall 開啟所有訂閱\n/pauseall 暫停所有訂閱\n/unsuball 取消所有訂閱\n/help 幫助\n/version Bot 版本資訊",
-        }
-    }
-
-    pub fn settings_title(self) -> &'static str {
-        match self {
-            Self::En => "Settings",
-            Self::ZhTw => "設定",
-        }
-    }
-
-    pub fn settings_opml_button(self) -> &'static str {
-        match self {
-            Self::En => "OPML import/export",
-            Self::ZhTw => "OPML 匯入/匯出",
-        }
-    }
-
-    pub fn settings_import_button(self) -> &'static str {
-        match self {
-            Self::En => "Import",
-            Self::ZhTw => "匯入",
-        }
-    }
-
-    pub fn settings_export_button(self) -> &'static str {
-        match self {
-            Self::En => "Export",
-            Self::ZhTw => "匯出",
-        }
-    }
-
-    pub fn settings_interval_button(self) -> &'static str {
-        match self {
-            Self::En => "Refresh interval",
-            Self::ZhTw => "更新頻率",
-        }
-    }
-
-    pub fn settings_language_button(self) -> &'static str {
-        match self {
-            Self::En => "Language",
-            Self::ZhTw => "語系",
-        }
-    }
-
-    pub fn settings_back_button(self) -> &'static str {
-        match self {
-            Self::En => "Back",
-            Self::ZhTw => "返回",
-        }
-    }
-
-    pub fn import_hint(self) -> &'static str {
-        match self {
-            Self::En => "Send an OPML file to import subscriptions.",
-            Self::ZhTw => "請直接傳送 OPML 檔案以匯入訂閱。",
-        }
-    }
-
-    pub fn interval_hint(self) -> &'static str {
-        match self {
-            Self::En => "Choose a refresh interval for all subscriptions in this chat.",
-            Self::ZhTw => "請選擇此聊天室所有訂閱的更新頻率。",
-        }
-    }
-
-    pub fn lang_updated(self) -> &'static str {
-        match self {
-            Self::En => "Language updated: English",
-            Self::ZhTw => "語言已更新：繁體中文",
-        }
-    }
-
-    pub fn interval_updated(self, count: u64) -> String {
-        match self {
-            Self::En => format!("Updated {count} subscriptions"),
-            Self::ZhTw => format!("已更新 {count} 個訂閱"),
-        }
-    }
-}
+pub use crate::bot::i18n::Lang;
 
 #[derive(Clone)]
 pub struct BotState {
@@ -151,10 +49,13 @@ pub async fn run_bot(
     fetcher: Fetcher,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    let commands = COMMANDS
-        .iter()
-        .filter(|(_, description)| !description.is_empty())
-        .map(|(command, description)| teloxide::types::BotCommand::new(*command, *description))
+    // Registered menu = the derive-generated list, minus deliberately hidden
+    // entries (empty description, e.g. /ping). Telegram rejects empty
+    // descriptions, and this keeps "add a command" a one-place change instead
+    // of "edit three places and break one test".
+    let commands = Command::bot_commands()
+        .into_iter()
+        .filter(|command| !command.description.is_empty())
         .collect::<Vec<_>>();
     bot.set_my_commands(commands).await?;
 
@@ -229,6 +130,18 @@ async fn handle_command(
         Command::Set => handle_set(&bot, &msg, &state).await?,
         Command::Settings => handle_settings(&bot, &msg, &state).await?,
         Command::Check => handle_check(&bot, &msg, &state).await?,
+        Command::Bm(payload) => bookmarks::handle_bm(&bot, &msg, &state, payload.trim()).await?,
+        Command::Bookmarks => bookmarks::handle_bookmarks(&bot, &msg, &state).await?,
+        Command::Bmsearch(payload) => {
+            bookmarks::handle_bmsearch(&bot, &msg, &state, payload.trim()).await?
+        }
+        Command::Bmnote(payload) => {
+            bookmarks::handle_bmnote(&bot, &msg, &state, payload.trim()).await?
+        }
+        Command::Bmtag(payload) => bookmarks::handle_bmtag(&bot, &msg, &state, &payload).await?,
+        Command::Bmdel(payload) => {
+            bookmarks::handle_bmdel(&bot, &msg, &state, payload.trim()).await?
+        }
     }
     Ok(())
 }
@@ -441,6 +354,21 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
     let mut unchanged_count = 0usize;
     let mut error_count = 0usize;
     let now = now_unix();
+    let bm_off = state
+        .repo
+        .chat_ids_with_option_off(crate::bot::bookmarks::BM_BTN_PREFIX)
+        .await
+        .unwrap_or_default();
+    let summary_configured = state.config.bookmark.ai.mcp.is_configured();
+    let sum_off = if summary_configured {
+        state
+            .repo
+            .chat_ids_with_option_off(crate::bot::bookmarks::BM_SUM_PREFIX)
+            .await
+            .unwrap_or_default()
+    } else {
+        std::collections::HashSet::new()
+    };
 
     for sub in sources {
         let Some(source_id) = sub.source_id else {
@@ -535,36 +463,31 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
                         .await
                         .map_err(to_request_error)?;
 
-                    let preview_text = trim_description(
-                        item.description.as_deref().unwrap_or(""),
-                        state.config.preview_text,
-                    );
-                    let enable_telegraph =
-                        sub.enable_telegraph == Some(1) && telegraph_url.is_some();
-                    let data = MessageData {
+                    let item_data = ItemForChat {
                         source_title: source.title.as_deref().unwrap_or(""),
                         content_title: &item.title,
                         raw_link: &item.link,
-                        preview_text: &preview_text,
-                        telegraph_url: telegraph_url.as_deref().unwrap_or(""),
-                        tags: sub.tag.as_deref().unwrap_or(""),
-                        enable_telegraph,
+                        description: item.description.as_deref().unwrap_or(""),
+                        telegraph_url: telegraph_url.as_deref(),
+                        hash_id: &hash_id,
                     };
-                    let text = match state.config.message_mode {
-                        MessageMode::Html => render_html(&data),
-                        MessageMode::Markdown => render_markdown(&data),
+                    let sub_opts = SubOptions {
+                        enable_notification: sub.enable_notification == Some(1),
+                        enable_telegraph: sub.enable_telegraph == Some(1),
+                        tag: sub.tag.as_deref().unwrap_or(""),
                     };
-                    let _ = sender
-                        .send_text(
-                            chat_id,
-                            &text,
-                            SendOptions {
-                                disable_web_page_preview: state.config.disable_web_page_preview,
-                                disable_notification: sub.enable_notification != Some(1),
-                                parse_mode: state.config.message_mode,
-                            },
-                        )
-                        .await;
+                    let bookmark_button = !bm_off.contains(&chat_id);
+                    let summary_button = summary_configured && !sum_off.contains(&chat_id);
+                    let _ = send_item_to_chat(
+                        &sender,
+                        &state.config,
+                        chat_id,
+                        &item_data,
+                        &sub_opts,
+                        bookmark_button,
+                        summary_button,
+                    )
+                    .await;
                     new_count += 1;
                 }
 

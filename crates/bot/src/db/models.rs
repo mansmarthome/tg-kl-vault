@@ -48,6 +48,36 @@ pub struct Content {
     pub updated_at: Option<String>,
 }
 
+/// A per-chat bookmark. Self-contained: `title`/`url`/`source_title` are
+/// snapshots so a bookmark renders even after `contents`/`sources` are pruned;
+/// `content_hash_id` is a breadcrumb only and may dangle.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct Bookmark {
+    pub id: i64,
+    pub chat_id: i64,
+    pub created_by: i64,
+    pub url: String,
+    pub title: String,
+    pub note: String,
+    pub source_title: String,
+    pub content_hash_id: Option<String>,
+    pub telegraph_url: Option<String>,
+    pub tag_state: i64,
+    pub tag_attempts: i64,
+    pub tag_next_attempt_at: i64,
+    pub notify_message_id: Option<i64>,
+    pub notify_kind: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct BookmarkTag {
+    pub bookmark_id: i64,
+    pub tag: String,
+    pub origin: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct OptionRow {
     pub id: i64,

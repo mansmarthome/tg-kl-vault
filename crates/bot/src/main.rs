@@ -11,6 +11,7 @@ use flowerss_bot::{
     feed::fetch::Fetcher,
     preview::{NoopPublisher, TelegraphPublisher},
     scheduler::{Scheduler, SchedulerOptions},
+    tagging::{build_tagger, worker::TagWorker},
 };
 use teloxide::Bot;
 use tokio::sync::watch;
@@ -72,11 +73,28 @@ async fn main() -> anyhow::Result<()> {
     let scheduler_rx = shutdown_rx.clone();
     let scheduler_task = tokio::spawn(async move { scheduler.run_until_shutdown(scheduler_rx).await });
 
+    // Background tag worker: a third writer on its own shutdown clone. Skipped
+    // entirely for --dry-run (that path returns above).
+    let tagger = build_tagger(&config);
+    let meter_quota = tagger.is_gemini();
+    let worker = TagWorker::new(
+        repo.clone(),
+        tagger,
+        TeloxideSender::new(bot.clone()),
+        config.clone(),
+        fetcher.client().clone(),
+        meter_quota,
+    );
+    let worker_rx = shutdown_rx.clone();
+    let worker_task = tokio::spawn(async move { worker.run_until_shutdown(worker_rx).await });
+
     let bot_rx = shutdown_rx.clone();
     let bot_task = tokio::spawn(async move { run_bot(bot, config, repo, fetcher, bot_rx).await });
 
-    let (scheduler_result, bot_result) = tokio::try_join!(scheduler_task, bot_task).context("join tasks")?;
+    let (scheduler_result, worker_result, bot_result) =
+        tokio::try_join!(scheduler_task, worker_task, bot_task).context("join tasks")?;
     scheduler_result.context("run scheduler")?;
+    worker_result.context("run tag worker")?;
     bot_result.context("run bot")?;
     signal_task.abort();
     Ok(())

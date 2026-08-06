@@ -231,6 +231,31 @@ impl Repo {
             .await
     }
 
+    /// Chat ids whose option `{prefix}{chat_id}` is explicitly off (value
+    /// `"0"`). Opt-out semantics: absence of a row means the feature is on, so
+    /// this returns only the (usually few) chats that turned it off.
+    pub async fn chat_ids_with_option_off(&self, prefix: &str) -> sqlx::Result<HashSet<i64>> {
+        // Escape LIKE metacharacters in the (trusted, but let's be tidy) prefix.
+        let mut pattern = String::with_capacity(prefix.len() + 1);
+        for ch in prefix.chars() {
+            if matches!(ch, '\\' | '%' | '_') {
+                pattern.push('\\');
+            }
+            pattern.push(ch);
+        }
+        pattern.push('%');
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM options WHERE name LIKE ? ESCAPE '\\' AND value = '0'",
+        )
+        .bind(pattern)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(names
+            .into_iter()
+            .filter_map(|name| name.strip_prefix(prefix).and_then(|s| s.parse::<i64>().ok()))
+            .collect())
+    }
+
     pub async fn set_option(&self, name: &str, value: &str) -> sqlx::Result<()> {
         sqlx::query(
             "INSERT INTO options (name, value, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \

@@ -177,7 +177,7 @@ fn collapse_newlines(input: &str) -> String {
     out
 }
 
-fn decode_entities(input: &str) -> String {
+pub(crate) fn decode_entities(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(amp) = rest.find('&') {
