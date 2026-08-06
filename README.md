@@ -214,6 +214,12 @@ Every config value can be supplied through environment variables with the `FLOWE
 | `FLOWERSS_BOOKMARK_AI_MAX_RPM` | `bookmark.ai.max_rpm` | `10` |
 | `FLOWERSS_BOOKMARK_AI_MAX_TAGS` | `bookmark.ai.max_tags` | `3` |
 | `FLOWERSS_BOOKMARK_AI_PAGE_SIZE` | `bookmark.ai.page_size` | `5` |
+| `FLOWERSS_BOOKMARK_AI_MCP_ENDPOINT` | `bookmark.ai.mcp.endpoint` | `https://pi-mcp.example.com/mcp` |
+| `FLOWERSS_BOOKMARK_AI_MCP_TOKEN` | `bookmark.ai.mcp.token` | (bearer token) |
+| `FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_ID` | `bookmark.ai.mcp.cf_access_client_id` | (Cloudflare Access) |
+| `FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_SECRET` | `bookmark.ai.mcp.cf_access_client_secret` | (Cloudflare Access) |
+| `FLOWERSS_BOOKMARK_AI_MCP_TIMEOUT_SECONDS` | `bookmark.ai.mcp.timeout_seconds` | `240` |
+| `FLOWERSS_BOOKMARK_AI_MCP_POLL_INTERVAL_MS` | `bookmark.ai.mcp.poll_interval_ms` | `1500` |
 
 List values accept comma-separated values. Bracketed forms also work, for example `FLOWERSS_ALLOWED_USERS="[123,-100]"`.
 
@@ -221,7 +227,8 @@ List values accept comma-separated values. Bracketed forms also work, for exampl
 
 Each chat has a bookmark library. A 🔖 button appears under every pushed item (toggle it in `/settings → 🔖 Bookmarks`), and `/bm <url>` bookmarks any URL. Saving replies immediately; a background worker then auto-tags the bookmark and edits the message. See `docs/usage.md` for the command list.
 
-- **Tagger.** `provider = "auto"` (the default) uses Google Gemini's free tier when an `api_key` is present, otherwise a local keyword heuristic that needs no key and works offline. Tags come from a fixed English-slug category table — the AI can only pick from it.
+- **Tagger.** `provider = "auto"` (the default) uses Google Gemini's free tier when an `api_key` is present, otherwise a local keyword heuristic that needs no key and works offline. `provider = "mcp"` instead drives a remote agent (see below). Tags come from a fixed English-slug category table — the AI can only pick from it.
+- **MCP remote agent.** Point `[bookmark.ai.mcp]` at a [pi-mcp-bridge](https://github.com/siygle/pi-mcp-bridge) endpoint (a stateless Streamable-HTTP MCP server) to have your own local agent do the AI work. With `provider = "mcp"` it does the auto-tagging; and whenever the bridge is configured, pushed items gain an on-demand **📝 summary button** — tapping it asks the agent to fetch the article and summarize it, replying with the result. Calls use the async job tools (`pi_run_async` + `pi_result` polling) so long agent turns don't hit a proxy timeout. The `token` is a shell-grade credential (the agent can run tools on your machine) — keep it behind a tunnel + ACL. If the bridge is unreachable, tagging falls back to the heuristic.
 - **Quota.** `daily_quota` and `max_rpm` are **conservative guards, not official figures**: Google no longer publishes per-model free-tier numbers, so check your real quota in [AI Studio](https://aistudio.google.com/) and adjust. The authoritative protection is the client's 429 latch (which cools down, and latches to the next day when the body signals a daily cap); a bad API key disables Gemini for the process after one logged error. The offline heuristic is the final, never-failing fallback.
 - **Search** uses SQLite `LIKE`: it is **ASCII case-insensitive only** (CJK text is case-sensitive), and `%`/`_` are treated as literals.
 - **URL normalization** strips common tracking params (`utm_*`, `fbclid`, …) but keeps `ref` and `si`, and does **not** strip `www.` or a trailing slash. Consequence: `www.x.com/a` and `x.com/a` are two separate bookmarks.

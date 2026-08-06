@@ -43,7 +43,7 @@ retention_days = 90
 # The API key can also come from env: FLOWERSS_BOOKMARK_AI_API_KEY, or a bare
 # GEMINI_API_KEY. Every field has a FLOWERSS_BOOKMARK_AI_* env override.
 [bookmark.ai]
-provider    = "auto"                  # "auto" | "gemini" | "heuristic"
+provider    = "auto"                  # "auto" | "gemini" | "heuristic" | "mcp"
 api_key     = ""
 model       = "gemini-3.1-flash-lite"
 endpoint    = "https://generativelanguage.googleapis.com"
@@ -51,3 +51,20 @@ daily_quota = 200                     # conservative soft guard, not official
 max_rpm     = 10                      # conservative soft guard, not official
 max_tags    = 3
 page_size   = 5
+
+# Remote-agent backend over MCP (pi-mcp-bridge). Used when provider = "mcp"
+# (tagging) and, whenever configured, for the on-demand 📝 article-summary
+# button under pushed items. The bridge drives a real coding agent on your
+# machine, so `token` is a shell-grade credential — keep it behind a tunnel +
+# ACL. Calls use the async job tools (pi_run_async + pi_result polling), which
+# tolerate long agent turns and the ~100s Cloudflare-free proxy timeout.
+# Env overrides: FLOWERSS_BOOKMARK_AI_MCP_ENDPOINT / _TOKEN /
+# _CF_ACCESS_CLIENT_ID / _CF_ACCESS_CLIENT_SECRET / _TIMEOUT_SECONDS /
+# _POLL_INTERVAL_MS.
+[bookmark.ai.mcp]
+endpoint                = ""          # e.g. https://pi-mcp.example.com/mcp
+token                   = ""          # Bearer token (openssl rand -hex 32)
+cf_access_client_id     = ""          # optional Cloudflare Access service token
+cf_access_client_secret = ""
+timeout_seconds         = 240
+poll_interval_ms        = 1500

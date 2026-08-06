@@ -36,6 +36,8 @@
 - 搜寻使用 SQLite `LIKE`：**仅 ASCII 不分大小写**（中日韩字元区分大小写），且 `%`、`_` 会被当成字面字元。
 - 网址正规化会移除常见追踪参数（`utm_*`、`fbclid` 等，但**保留** `ref` 与 `si`），不会移除 `www.` 或结尾斜线 — 因此 `www.x.com/a` 与 `x.com/a` 会是两笔不同书签。
 - 在 `/settings → 🔖 书签` 可开关每则推播的 🔖 按钮、开关 AI 自动标签，以及汇出书签（Markdown，依标签分组）。
+- **AI 后端可选 MCP 远端 agent**：在 `[bookmark.ai]` 设 `provider = "mcp"` 并填好 `[bookmark.ai.mcp]`（[pi-mcp-bridge](https://github.com/siygle/pi-mcp-bridge) 端点），标签就改由你自己的 agent 产生；连不上时自动退回本地启发式。
+- **文章摘要**：只要设定了 MCP 端点，每则推播就会多一个 **📝** 按钮。点下去会请远端 agent 去抓该文章内容并汇整，稍候以回覆讯息带出摘要（非同步，长任务也能等）。此按钮同样可在 `/settings → 🔖 书签` 内开关。
 
 ### Channel 订阅使用方法
 
