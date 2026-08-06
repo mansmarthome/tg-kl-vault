@@ -1,3 +1,5 @@
+use teloxide::utils::html::escape;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageData<'a> {
     pub source_title: &'a str,
@@ -9,34 +11,38 @@ pub struct MessageData<'a> {
     pub enable_telegraph: bool,
 }
 
-/// Render the Go `defaultMessageTpl` byte-for-byte.
-///
-/// Do not translate or tidy whitespace here. The separator lines, `原文`, and
-/// Go template trim-marker effects are user-visible compatibility surface.
+/// Renders the Go `defaultMessageTpl`. The literal template (separator lines,
+/// `原文`, whitespace) stays byte-for-byte for Go parity, but the interpolated
+/// feed-derived fields are HTML-escaped — a **deliberate deviation** from the
+/// Go original, which did not escape. A single unescaped `&` or `<` in a feed
+/// title/URL otherwise makes Telegram reject the message with
+/// `can't parse entities`, and `sender.rs` only logs it — i.e. the push is
+/// silently lost. URLs in `href` are escaped too (feed URLs routinely carry
+/// `&`).
 pub fn render_html(data: &MessageData<'_>) -> String {
     let mut out = String::new();
     out.push_str("<b>");
-    out.push_str(data.source_title);
+    out.push_str(&escape(data.source_title));
     out.push_str("</b>");
-    push_preview(&mut out, data.preview_text);
+    push_preview(&mut out, &escape(data.preview_text));
     if data.enable_telegraph {
         out.push('\n');
-        out.push_str(data.content_title);
+        out.push_str(&escape(data.content_title));
         out.push_str(" <a href=\"");
-        out.push_str(data.telegraph_url);
+        out.push_str(&escape(data.telegraph_url));
         out.push_str("\">Telegraph</a> | <a href=\"");
-        out.push_str(data.raw_link);
+        out.push_str(&escape(data.raw_link));
         out.push_str("\">原文</a>");
     } else {
         out.push('\n');
         out.push_str("<a href=\"");
-        out.push_str(data.raw_link);
+        out.push_str(&escape(data.raw_link));
         out.push_str("\">");
-        out.push_str(data.content_title);
+        out.push_str(&escape(data.content_title));
         out.push_str("</a>");
     }
     out.push('\n');
-    out.push_str(data.tags);
+    out.push_str(&escape(data.tags));
     out.push('\n');
     out
 }
@@ -83,7 +89,9 @@ pub struct FeedSettingData<'a> {
     pub tag: &'a str,
 }
 
-/// Render the Go `feedSettingTmpl` (`internal/bot/handler/set.go`) byte-for-byte.
+/// Renders the Go `feedSettingTmpl` (`internal/bot/handler/set.go`). Sent as
+/// HTML, so the feed-derived title/link/tag are escaped (deliberate deviation
+/// from Go — see `render_html`); the static labels stay byte-for-byte.
 pub fn render_feed_setting(data: &FeedSettingData<'_>) -> String {
     let status = if data.source_error_count >= data.error_threshold { "暂停" } else { "抓取中" };
     let notice = match data.enable_notification {
@@ -96,11 +104,18 @@ pub fn render_feed_setting(data: &FeedSettingData<'_>) -> String {
         Some(1) => "开启",
         _ => "",
     };
-    let tag = if data.tag.is_empty() { "无" } else { data.tag };
+    let tag = if data.tag.is_empty() { "无".to_owned() } else { escape(data.tag) };
 
     format!(
         "\n订阅<b>设置</b>\n[id] {}\n[标题] {}\n[Link] {}\n[抓取更新] {}\n[抓取频率] {}分钟\n[通知] {}\n[Telegraph] {}\n[Tag] {}\n",
-        data.source_id, data.source_title, data.source_link, status, data.interval, notice, telegraph, tag
+        data.source_id,
+        escape(data.source_title),
+        escape(data.source_link),
+        status,
+        data.interval,
+        notice,
+        telegraph,
+        tag
     )
 }
 
@@ -161,6 +176,52 @@ mod tests {
             render_markdown(&fixture("预览文字", true)),
             "** 源标题 **\n---------- Preview ----------\n预览文字\n-----------------------------\n文章标题 [Telegraph](https://telegra.ph/post) | [原文](https://example.com/post)\n#tag1 #tag2\n"
         );
+    }
+
+    #[test]
+    fn html_escapes_feed_title_link_and_tags() {
+        let data = MessageData {
+            source_title: "Ben & Jerry's",
+            content_title: "Rust <T> & you",
+            raw_link: "https://x.test/a?b=1&c=2",
+            preview_text: "1 < 2 & 3",
+            telegraph_url: "https://telegra.ph/x?u=1&v=2",
+            tags: "#a&b",
+            enable_telegraph: true,
+        };
+        let out = render_html(&data);
+        // No raw entity-breaking characters survive in the HTML body...
+        assert!(!out.contains("<T>"));
+        assert!(out.contains("Ben &amp; Jerry's"));
+        assert!(out.contains("Rust &lt;T&gt; &amp; you"));
+        assert!(out.contains("href=\"https://x.test/a?b=1&amp;c=2\""));
+        assert!(out.contains("href=\"https://telegra.ph/x?u=1&amp;v=2\""));
+        assert!(out.contains("1 &lt; 2 &amp; 3"));
+        assert!(out.contains("#a&amp;b"));
+        // ...while our own template tags stay intact.
+        assert!(out.contains("<b>Ben &amp; Jerry's</b>"));
+        assert!(out.contains(">Telegraph</a>"));
+    }
+
+    #[test]
+    fn feed_setting_escapes_title_link_tag() {
+        let data = FeedSettingData {
+            source_id: 7,
+            source_title: "A & B <feed>",
+            source_link: "https://x.test/f?a=1&b=2",
+            source_error_count: 0,
+            error_threshold: 100,
+            interval: 10,
+            enable_notification: Some(1),
+            enable_telegraph: Some(0),
+            tag: "#x&y",
+        };
+        let out = render_feed_setting(&data);
+        assert!(out.contains("[标题] A &amp; B &lt;feed&gt;"));
+        assert!(out.contains("[Link] https://x.test/f?a=1&amp;b=2"));
+        assert!(out.contains("[Tag] #x&amp;y"));
+        // Our own <b> label is preserved.
+        assert!(out.contains("订阅<b>设置</b>"));
     }
 
     #[test]

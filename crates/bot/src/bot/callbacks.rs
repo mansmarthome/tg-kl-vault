@@ -407,10 +407,13 @@ async fn handle_unsub_feed_item(
         .await
     {
         Ok(_) => {
+            // Escape the feed-derived link/title (sent as HTML); a raw `&`/`<`
+            // otherwise triggers `can't parse entities`. The frozen part here is
+            // the missing auth check above, not this text.
             let text = format!(
                 "[{source_id}] <a href=\"{}\">{}</a> 退订成功",
-                source.link.as_deref().unwrap_or(""),
-                source.title.as_deref().unwrap_or("")
+                teloxide::utils::html::escape(source.link.as_deref().unwrap_or("")),
+                teloxide::utils::html::escape(source.title.as_deref().unwrap_or(""))
             );
             bot.edit_message_text(chat_id, message_id, text)
                 .parse_mode(ParseMode::Html)
