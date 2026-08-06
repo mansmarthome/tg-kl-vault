@@ -5,16 +5,16 @@ use tracing::{info, warn};
 
 use crate::{
     bot::{
-        render::{render_html, render_markdown, MessageData},
-        sender::{MessageSender, SendOptions, SendOutcome},
+        broadcast::{send_item_to_chat, ItemForChat, SubOptions},
+        sender::{MessageSender, SendOutcome},
     },
-    config::{Config, MessageMode},
+    config::Config,
     db::{
         models::{Content, Source, Subscribe},
         repo::Repo,
     },
     feed::{fetch::{FetchOutcome, Fetcher}, hash::gen_hash_id, parse::{parse_feed, ParsedItem}},
-    preview::{trim_description, PublishRequest, PreviewPublisher},
+    preview::{PublishRequest, PreviewPublisher},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,31 +188,34 @@ where
         telegraph_url: Option<&str>,
         subs: &[Subscribe],
     ) -> anyhow::Result<()> {
+        // One opt-out read per item (opt-out rows only, so the set is small;
+        // absence means the 🔖 button is enabled).
+        let bm_off = self
+            .repo
+            .chat_ids_with_option_off(crate::bot::bookmarks::BM_BTN_PREFIX)
+            .await
+            .unwrap_or_default();
+
+        let item_data = ItemForChat {
+            source_title: source.title.as_deref().unwrap_or(""),
+            content_title: &item.title,
+            raw_link: &item.link,
+            description: item.description.as_deref().unwrap_or(""),
+            telegraph_url,
+            hash_id,
+        };
+
         for sub in subs {
             let Some(user_id) = sub.user_id else { continue };
 
-            let preview_text = trim_description(item.description.as_deref().unwrap_or(""), self.config.preview_text);
-            let enable_telegraph = sub.enable_telegraph == Some(1) && telegraph_url.is_some();
-            let data = MessageData {
-                source_title: source.title.as_deref().unwrap_or(""),
-                content_title: &item.title,
-                raw_link: &item.link,
-                preview_text: &preview_text,
-                telegraph_url: telegraph_url.unwrap_or(""),
-                tags: sub.tag.as_deref().unwrap_or(""),
-                enable_telegraph,
+            let sub_opts = SubOptions {
+                enable_notification: sub.enable_notification == Some(1),
+                enable_telegraph: sub.enable_telegraph == Some(1),
+                tag: sub.tag.as_deref().unwrap_or(""),
             };
-            let text = match self.config.message_mode {
-                MessageMode::Html => render_html(&data),
-                MessageMode::Markdown => render_markdown(&data),
-            };
-            let options = SendOptions {
-                disable_web_page_preview: self.config.disable_web_page_preview,
-                disable_notification: sub.enable_notification != Some(1),
-                parse_mode: self.config.message_mode,
-            };
+            let bookmark_button = !bm_off.contains(&user_id);
 
-            match self.sender.send_text(user_id, &text, options).await {
+            match send_item_to_chat(&self.sender, &self.config, user_id, &item_data, &sub_opts, bookmark_button).await {
                 Ok(SendOutcome::Sent) => {}
                 Ok(SendOutcome::Forbidden) => {
                     warn!(source_id = source.id, user_id, hash_id, "broadcast forbidden; subscription kept");
@@ -472,5 +475,47 @@ mod tests {
 
         assert!(repo.subscription(1, source_id).await.unwrap().is_some());
         assert!(repo.subscription(2, source_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn broadcast_item_attaches_bookmark_button_unless_chat_opted_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::connect(dir.path().join("data.db").to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+
+        let source_id = repo.insert_source("https://example.com/feed", "Example Source").await.unwrap();
+        repo.subscribe_user(1, source_id).await.unwrap();
+        repo.subscribe_user(2, source_id).await.unwrap();
+        // Chat 2 opted out of the 🔖 button.
+        repo.set_option("tg-kl-vault:bmbtn:2", "0").await.unwrap();
+
+        let source = repo.source_by_link("https://example.com/feed").await.unwrap().unwrap();
+        let subs = repo.subscribes_for_source(source_id).await.unwrap();
+
+        let config = Config::default();
+        let fetcher = Fetcher::new(&config).unwrap();
+        let scheduler = Scheduler::new(
+            repo.clone(),
+            fetcher,
+            crate::preview::NoopPublisher,
+            RecordingSender::default(),
+            config,
+            SchedulerOptions::default(),
+        );
+
+        let item = ParsedItem {
+            guid: "post-1".to_owned(),
+            link: "https://example.com/post-1".to_owned(),
+            title: "New Post".to_owned(),
+            description: Some("<p>hello</p>".to_owned()),
+            content: None,
+        };
+        scheduler.broadcast_item(&source, &item, "hash1", None, &subs).await.unwrap();
+
+        let sent = scheduler.sender.sent.lock().unwrap();
+        let chat1 = sent.iter().find(|s| s.chat_id == 1).unwrap();
+        let chat2 = sent.iter().find(|s| s.chat_id == 2).unwrap();
+        assert!(chat1.reply_markup.is_some(), "opted-in chat gets the 🔖 button");
+        assert!(chat2.reply_markup.is_none(), "opted-out chat gets no button");
     }
 }

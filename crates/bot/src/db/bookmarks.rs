@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::{AssertSqlSafe, QueryBuilder, Sqlite};
 
-use super::models::{Bookmark, BookmarkTag};
+use super::models::{Bookmark, BookmarkTag, Content};
 use super::repo::Repo;
 
 /// sqlx 0.9 only accepts `&'static str` SQL by default. These query strings
@@ -147,6 +147,18 @@ impl Repo {
             "SELECT {BOOKMARK_COLS} FROM bookmarks WHERE id = ?"
         )))
         .bind(id)
+        .fetch_optional(self.pool())
+        .await
+    }
+
+    /// Looks up a content row by hash (the 🔖 button path). May return `None`
+    /// if `prune_contents` already deleted it — callers must handle expiry.
+    pub async fn content_by_hash(&self, hash_id: &str) -> sqlx::Result<Option<Content>> {
+        sqlx::query_as::<_, Content>(
+            "SELECT source_id, hash_id, raw_id, raw_link, title, telegraph_url, \
+             created_at, updated_at FROM contents WHERE hash_id = ?",
+        )
+        .bind(hash_id)
         .fetch_optional(self.pool())
         .await
     }
@@ -342,6 +354,27 @@ impl Repo {
             .execute(&mut *tx)
             .await?;
         tx.commit().await
+    }
+
+    /// Fills in a title fetched from page metadata (worker path).
+    pub async fn set_bookmark_title(&self, id: i64, title: &str) -> sqlx::Result<()> {
+        sqlx::query("UPDATE bookmarks SET title = ?, updated_at = ? WHERE id = ?")
+            .bind(title)
+            .bind(now_unix())
+            .bind(id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// Clears the notify message id (worker found the message `Gone`).
+    pub async fn clear_bookmark_notify(&self, id: i64) -> sqlx::Result<()> {
+        sqlx::query("UPDATE bookmarks SET notify_message_id = NULL, updated_at = ? WHERE id = ?")
+            .bind(now_unix())
+            .bind(id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
     }
 
     /// Bumps the retry counter and reschedules a transient failure.

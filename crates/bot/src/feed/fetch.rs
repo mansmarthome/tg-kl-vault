@@ -46,6 +46,16 @@ impl Fetcher {
         Self { client, user_agent: user_agent.into(), max_body_bytes: 10 * 1024 * 1024 }
     }
 
+    /// Shared HTTP client, reused by the bookmark metadata fetcher so it
+    /// inherits the same proxy/timeout/redirect policy.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    pub fn user_agent(&self) -> &str {
+        &self.user_agent
+    }
+
     pub async fn fetch(
         &self,
         url: &str,

@@ -33,6 +33,21 @@ pub enum Command {
     Help,
     #[command(description = "Bot 版本信息")]
     Version,
+    // Bookmarks — appended after the frozen Go-parity 14 (never inserted).
+    #[command(description = "收藏網址")]
+    Bm(String),
+    #[command(description = "查看書籤")]
+    Bookmarks,
+    #[command(description = "搜尋書籤")]
+    Bmsearch(String),
+    // Hidden (empty description, like /ping): typeable but not in the menu.
+    // Their real UI is the 📝/🏷/🗑 buttons; these are for power users.
+    #[command(description = "")]
+    Bmnote(String),
+    #[command(description = "")]
+    Bmtag(String),
+    #[command(description = "")]
+    Bmdel(String),
 }
 
 /// The 14 commands the Go version shipped, frozen as a Go-parity golden. New

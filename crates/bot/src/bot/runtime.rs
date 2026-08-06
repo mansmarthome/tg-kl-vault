@@ -10,15 +10,16 @@ use tracing::{info, warn};
 
 use crate::{
     bot::{
+        bookmarks,
+        broadcast::{send_item_to_chat, ItemForChat, SubOptions},
         callbacks::handle_callback,
         commands::Command,
         documents::handle_document,
         keyboard::{feed_item_list_keyboard, settings_keyboard, unsuball_confirm_keyboard},
-        render::{render_html, render_markdown, MessageData},
-        sender::{MessageSender, SendOptions, TeloxideSender},
+        sender::TeloxideSender,
         subscribe::create_source,
     },
-    config::{Config, MessageMode},
+    config::Config,
     db::{models::Content, repo::Repo},
     feed::{
         fetch::{FetchOutcome, Fetcher},
@@ -26,7 +27,7 @@ use crate::{
         parse::parse_feed,
     },
     opml::{export_opml, OpmlSource},
-    preview::{trim_description, PreviewPublisher, PublishRequest, TelegraphPublisher},
+    preview::{PreviewPublisher, PublishRequest, TelegraphPublisher},
 };
 
 pub use crate::bot::i18n::Lang;
@@ -129,6 +130,18 @@ async fn handle_command(
         Command::Set => handle_set(&bot, &msg, &state).await?,
         Command::Settings => handle_settings(&bot, &msg, &state).await?,
         Command::Check => handle_check(&bot, &msg, &state).await?,
+        Command::Bm(payload) => bookmarks::handle_bm(&bot, &msg, &state, payload.trim()).await?,
+        Command::Bookmarks => bookmarks::handle_bookmarks(&bot, &msg, &state).await?,
+        Command::Bmsearch(payload) => {
+            bookmarks::handle_bmsearch(&bot, &msg, &state, payload.trim()).await?
+        }
+        Command::Bmnote(payload) => {
+            bookmarks::handle_bmnote(&bot, &msg, &state, payload.trim()).await?
+        }
+        Command::Bmtag(payload) => bookmarks::handle_bmtag(&bot, &msg, &state, &payload).await?,
+        Command::Bmdel(payload) => {
+            bookmarks::handle_bmdel(&bot, &msg, &state, payload.trim()).await?
+        }
     }
     Ok(())
 }
@@ -341,6 +354,11 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
     let mut unchanged_count = 0usize;
     let mut error_count = 0usize;
     let now = now_unix();
+    let bm_off = state
+        .repo
+        .chat_ids_with_option_off(crate::bot::bookmarks::BM_BTN_PREFIX)
+        .await
+        .unwrap_or_default();
 
     for sub in sources {
         let Some(source_id) = sub.source_id else {
@@ -435,36 +453,29 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
                         .await
                         .map_err(to_request_error)?;
 
-                    let preview_text = trim_description(
-                        item.description.as_deref().unwrap_or(""),
-                        state.config.preview_text,
-                    );
-                    let enable_telegraph =
-                        sub.enable_telegraph == Some(1) && telegraph_url.is_some();
-                    let data = MessageData {
+                    let item_data = ItemForChat {
                         source_title: source.title.as_deref().unwrap_or(""),
                         content_title: &item.title,
                         raw_link: &item.link,
-                        preview_text: &preview_text,
-                        telegraph_url: telegraph_url.as_deref().unwrap_or(""),
-                        tags: sub.tag.as_deref().unwrap_or(""),
-                        enable_telegraph,
+                        description: item.description.as_deref().unwrap_or(""),
+                        telegraph_url: telegraph_url.as_deref(),
+                        hash_id: &hash_id,
                     };
-                    let text = match state.config.message_mode {
-                        MessageMode::Html => render_html(&data),
-                        MessageMode::Markdown => render_markdown(&data),
+                    let sub_opts = SubOptions {
+                        enable_notification: sub.enable_notification == Some(1),
+                        enable_telegraph: sub.enable_telegraph == Some(1),
+                        tag: sub.tag.as_deref().unwrap_or(""),
                     };
-                    let _ = sender
-                        .send_text(
-                            chat_id,
-                            &text,
-                            SendOptions {
-                                disable_web_page_preview: state.config.disable_web_page_preview,
-                                disable_notification: sub.enable_notification != Some(1),
-                                parse_mode: state.config.message_mode,
-                            },
-                        )
-                        .await;
+                    let bookmark_button = !bm_off.contains(&chat_id);
+                    let _ = send_item_to_chat(
+                        &sender,
+                        &state.config,
+                        chat_id,
+                        &item_data,
+                        &sub_opts,
+                        bookmark_button,
+                    )
+                    .await;
                     new_count += 1;
                 }
 

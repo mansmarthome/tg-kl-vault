@@ -42,6 +42,13 @@ pub async fn handle_callback(
     let chat_id = message.chat().id;
     let message_id = message.id();
 
+    if let Some(rest) = data.strip_prefix("bm:") {
+        return crate::bot::bookmarks::handle_bm_callback(
+            &bot, &query, &state, rest, chat_id, message_id,
+        )
+        .await;
+    }
+
     if let Some(action) = data.strip_prefix("settings:") {
         return handle_settings_callback(&bot, &query, &state, action, chat_id, message_id).await;
     }
@@ -215,6 +222,12 @@ async fn handle_settings_callback(
                 .reply_markup(settings_keyboard(lang))
                 .await?;
             Ok(())
+        }
+        action if action == "bm" || action.starts_with("bm:") => {
+            crate::bot::bookmarks::handle_settings_bm(
+                bot, query, state, action, chat_id, message_id,
+            )
+            .await
         }
         _ => respond_toast(bot, query, "error").await,
     }
