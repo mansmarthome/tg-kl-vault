@@ -37,7 +37,9 @@ pub fn render_list_page(data: &ListPageData) -> String {
     out.push_str("\n\n");
 
     if data.items.is_empty() {
-        out.push_str(lang.bm_empty());
+        // Plain prose containing literal `<…>` (e.g. "/bm <網址>") — must be
+        // escaped since this whole message is sent as HTML.
+        out.push_str(&escape(lang.bm_empty()));
         return out;
     }
 
@@ -276,7 +278,10 @@ mod tests {
     fn empty_list_renders_empty_state() {
         let data = ListPageData { lang: Lang::ZhTw, total: 0, human_page: 1, total_pages: 1, items: &[] };
         let out = render_list_page(&data);
-        assert!(out.contains(Lang::ZhTw.bm_empty()));
+        // The literal "<網址>" in the prompt must be escaped so Telegram's HTML
+        // parser doesn't choke on it (regression: CantParseEntities).
+        assert!(out.contains("&lt;網址&gt;"));
+        assert!(!out.contains("<網址>"));
     }
 
     #[test]
