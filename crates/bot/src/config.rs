@@ -190,7 +190,10 @@ pub struct SqliteConfig {
 
 impl Default for SqliteConfig {
     fn default() -> Self {
-        Self { path: "./data.db".to_owned() }
+        // Default under ./data/ so it lands inside the conventional mounted
+        // volume (docker-compose maps ./data:/app/data); a bare ./data.db would
+        // sit on the container's ephemeral layer and vanish on redeploy.
+        Self { path: "./data/data.db".to_owned() }
     }
 }
 
