@@ -2,19 +2,83 @@ pub mod bookmarks;
 pub mod models;
 pub mod repo;
 
-use sqlx::{
-    migrate::Migrator,
-    sqlite::{
-        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-    },
-    SqlitePool,
+use std::{
+    collections::HashSet,
+    path::Path,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use std::{path::Path, time::Duration};
+
+use anyhow::Context;
+use libsql::{Builder, Connection, Database, Row};
 use tracing::{info, warn};
 
-static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
+/// Result alias for the DB layer. Kept as `libsql::Result` (rather than
+/// `anyhow`) so callers can keep `.map_err(to_request_error)` — the libsql
+/// error type implements `std::error::Error`, `anyhow::Error` does not.
+pub type DbResult<T> = libsql::Result<T>;
 
-pub async fn connect(path: &str) -> anyhow::Result<SqlitePool> {
+/// Replacement for `sqlx::FromRow`: build a model from a positional libsql row.
+/// Column order must match the `SELECT` list in the query.
+pub trait FromRow: Sized {
+    fn from_row(row: &Row) -> libsql::Result<Self>;
+}
+
+impl FromRow for (i64, i64) {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok((row.get::<i64>(0)?, row.get::<i64>(1)?))
+    }
+}
+
+impl FromRow for (String, i64) {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok((row.get::<String>(0)?, row.get::<i64>(1)?))
+    }
+}
+
+/// Owns the libsql `Database` (kept alive so the embedded-replica background
+/// sync task keeps running) plus one shared `Connection`. `Connection` is
+/// cheap to clone and serializes access internally, so a single one is enough
+/// for this bot's write-mostly, low-concurrency workload.
+pub struct Db {
+    _database: Database,
+    conn: Connection,
+    remote: bool,
+}
+
+impl Db {
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// True when running as a Turso embedded replica (remote primary + local
+    /// file). Used by the caller to decide whether periodic `sync()` applies.
+    pub fn is_remote(&self) -> bool {
+        self.remote
+    }
+
+    pub async fn sync(&self) -> anyhow::Result<()> {
+        if self.remote {
+            self._database.sync().await.context("libsql sync")?;
+        }
+        Ok(())
+    }
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Opens the database. Two modes, chosen by env so existing local-file
+/// deployments keep working with zero configuration:
+///
+/// * `TURSO_DATABASE_URL` set  -> embedded replica (write-through to the Turso
+///   primary, reads served locally, background sync every 60s).
+/// * otherwise                 -> a plain local libsql file at `path`.
+pub async fn connect(path: &str) -> anyhow::Result<Arc<Db>> {
     // Log the absolute path and whether the file pre-existed so a silently
     // fresh (empty) database — the usual cause of "my subscriptions vanished"
     // after a redeploy onto non-persistent storage — is obvious from the logs.
@@ -24,34 +88,98 @@ pub async fn connect(path: &str) -> anyhow::Result<SqlitePool> {
         .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join(path)))
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| path.to_string());
-    if existed {
-        info!(db_path = %absolute, "opening existing sqlite database");
-    } else {
-        warn!(db_path = %absolute, "sqlite database not found; creating a fresh empty one (subscriptions will be empty until re-added)");
-    }
 
     if let Some(parent) = Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
 
-    // PRAGMAs live on `SqliteConnectOptions`, not a one-shot `pool.execute`.
-    // `synchronous` is per-connection, so the old approach only configured one
-    // of the four pooled connections; the tag worker is a second concurrent
-    // writer, exactly the condition that turns that into sporadic SQLITE_BUSY.
-    let options = SqliteConnectOptions::new()
-        .filename(path)
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5))
-        .synchronous(SqliteSynchronous::Normal)
-        .foreign_keys(true);
+    let turso_url = std::env::var("TURSO_DATABASE_URL").ok().filter(|u| !u.is_empty());
+    let remote = turso_url.is_some();
 
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .acquire_timeout(Duration::from_secs(5))
-        .connect_with(options)
+    let database = match turso_url {
+        Some(url) => {
+            let token = std::env::var("TURSO_AUTH_TOKEN").unwrap_or_default();
+            info!(db_path = %absolute, "opening Turso embedded replica (write-through to remote primary)");
+            Builder::new_remote_replica(path, url, token)
+                .sync_interval(Duration::from_secs(60))
+                .build()
+                .await
+                .context("open Turso embedded replica")?
+        }
+        None => {
+            if existed {
+                info!(db_path = %absolute, "opening existing local sqlite database");
+            } else {
+                warn!(db_path = %absolute, "sqlite database not found; creating a fresh empty one (subscriptions will be empty until re-added)");
+            }
+            Builder::new_local(path).build().await.context("open local sqlite database")?
+        }
+    };
+
+    let conn = database.connect().context("open db connection")?;
+    conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;")
+        .await
+        .context("apply pragmas")?;
+
+    let db = Db { _database: database, conn, remote };
+    if remote {
+        db.sync().await?;
+    }
+    run_migrations(&db.conn).await.context("run migrations")?;
+    Ok(Arc::new(db))
+}
+
+/// Embedded SQL migrations, keyed by the numeric version sqlx assigned them
+/// (the `NNNN_` filename prefix parsed as an integer). Embedding via
+/// `include_str!` means the running binary never depends on the on-disk
+/// `migrations/` directory.
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../../../../migrations/0001_go_schema.sql")),
+    (2, include_str!("../../../../migrations/0002_rust_additive.sql")),
+    (3, include_str!("../../../../migrations/0003_options_unique_name.sql")),
+    (4, include_str!("../../../../migrations/0004_bookmarks.sql")),
+];
+
+async fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _kl_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);",
+    )
+    .await?;
+
+    let mut applied = read_versions(conn, "SELECT version FROM _kl_migrations").await;
+    // Databases created by the previous sqlx-based code already ran these
+    // migrations and recorded them in `_sqlx_migrations`. Honour that so we
+    // don't re-run non-idempotent steps (e.g. 0002's `ADD COLUMN`).
+    applied.extend(read_versions(conn, "SELECT version FROM _sqlx_migrations").await);
+
+    for (version, sql) in MIGRATIONS {
+        if applied.contains(version) {
+            continue;
+        }
+        conn.execute_batch(sql)
+            .await
+            .with_context(|| format!("apply migration {version}"))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO _kl_migrations (version, applied_at) VALUES (?, ?)",
+            libsql::params![*version, now_unix()],
+        )
         .await?;
+        info!(version, "applied db migration");
+    }
+    Ok(())
+}
 
-    MIGRATOR.run(&pool).await?;
-    Ok(pool)
+/// Reads a set of migration versions; a missing table (the query errors) is
+/// treated as "none applied".
+async fn read_versions(conn: &Connection, sql: &str) -> HashSet<i64> {
+    let mut out = HashSet::new();
+    let Ok(mut rows) = conn.query(sql, ()).await else {
+        return out;
+    };
+    while let Ok(Some(row)) = rows.next().await {
+        if let Ok(v) = row.get::<i64>(0) {
+            out.insert(v);
+        }
+    }
+    out
 }

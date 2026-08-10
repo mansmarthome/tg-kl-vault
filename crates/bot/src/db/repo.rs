@@ -1,11 +1,13 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use libsql::{params::IntoParams, Connection, Row, Value};
 
 use super::models::{Content, Source, Subscribe, User};
+use super::{Db, DbResult, FromRow};
 use crate::config::ERROR_THRESHOLD;
 
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubscriptionSource {
     pub subscribe_id: i64,
     pub user_id: Option<i64>,
@@ -19,104 +21,206 @@ pub struct SubscriptionSource {
     pub title: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+impl FromRow for SubscriptionSource {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            subscribe_id: row.get(0)?,
+            user_id: row.get(1)?,
+            source_id: row.get(2)?,
+            enable_notification: row.get(3)?,
+            enable_telegraph: row.get(4)?,
+            tag: row.get(5)?,
+            interval: row.get(6)?,
+            wait_time: row.get(7)?,
+            link: row.get(8)?,
+            title: row.get(9)?,
+        })
+    }
+}
+
+#[derive(Clone)]
 pub struct Repo {
-    pool: SqlitePool,
+    db: Arc<Db>,
 }
 
 impl Repo {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(db: Arc<Db>) -> Self {
+        Self { db }
     }
 
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+    pub fn conn(&self) -> &Connection {
+        self.db.conn()
     }
 
-    pub async fn get_user(&self, id: i64) -> sqlx::Result<Option<User>> {
-        sqlx::query_as::<_, User>("SELECT id, created_at, updated_at FROM users WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
+    pub fn db(&self) -> &Arc<Db> {
+        &self.db
     }
 
-    pub async fn ensure_user(&self, id: i64) -> sqlx::Result<()> {
-        sqlx::query(
-            "INSERT OR IGNORE INTO users (id, created_at, updated_at) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    // --- small query helpers replacing sqlx's typed query API ---
+
+    pub(crate) async fn exec(&self, sql: &str, params: impl IntoParams) -> DbResult<u64> {
+        self.conn().execute(sql, params).await
+    }
+
+    pub(crate) async fn query_all<T: FromRow>(
+        &self,
+        sql: &str,
+        params: impl IntoParams,
+    ) -> DbResult<Vec<T>> {
+        let mut rows = self.conn().query(sql, params).await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(T::from_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    pub(crate) async fn query_opt<T: FromRow>(
+        &self,
+        sql: &str,
+        params: impl IntoParams,
+    ) -> DbResult<Option<T>> {
+        let mut rows = self.conn().query(sql, params).await?;
+        match rows.next().await? {
+            Some(row) => Ok(Some(T::from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn scalar_i64(&self, sql: &str, params: impl IntoParams) -> DbResult<i64> {
+        let mut rows = self.conn().query(sql, params).await?;
+        let row = rows.next().await?.ok_or(libsql::Error::QueryReturnedNoRows)?;
+        row.get::<i64>(0)
+    }
+
+    pub(crate) async fn scalar_opt_i64(
+        &self,
+        sql: &str,
+        params: impl IntoParams,
+    ) -> DbResult<Option<i64>> {
+        let mut rows = self.conn().query(sql, params).await?;
+        match rows.next().await? {
+            Some(row) => row.get::<Option<i64>>(0),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn scalar_opt_string(
+        &self,
+        sql: &str,
+        params: impl IntoParams,
+    ) -> DbResult<Option<String>> {
+        let mut rows = self.conn().query(sql, params).await?;
+        match rows.next().await? {
+            Some(row) => row.get::<Option<String>>(0),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn scalar_all_string(
+        &self,
+        sql: &str,
+        params: impl IntoParams,
+    ) -> DbResult<Vec<String>> {
+        let mut rows = self.conn().query(sql, params).await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(row.get::<String>(0)?);
+        }
+        Ok(out)
+    }
+
+    pub(crate) async fn scalar_all_i64(
+        &self,
+        sql: &str,
+        params: impl IntoParams,
+    ) -> DbResult<Vec<i64>> {
+        let mut rows = self.conn().query(sql, params).await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(row.get::<i64>(0)?);
+        }
+        Ok(out)
+    }
+
+    // --- repository methods ---
+
+    pub async fn get_user(&self, id: i64) -> DbResult<Option<User>> {
+        self.query_opt::<User>(
+            "SELECT id, created_at, updated_at FROM users WHERE id = ?",
+            libsql::params![id],
         )
-        .bind(id)
-        .execute(&self.pool)
+        .await
+    }
+
+    pub async fn ensure_user(&self, id: i64) -> DbResult<()> {
+        self.exec(
+            "INSERT OR IGNORE INTO users (id, created_at, updated_at) VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            libsql::params![id],
+        )
         .await?;
         Ok(())
     }
 
-    pub async fn list_sources(&self) -> sqlx::Result<Vec<Source>> {
-        sqlx::query_as::<_, Source>(
+    pub async fn list_sources(&self) -> DbResult<Vec<Source>> {
+        self.query_all::<Source>(
             "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
              FROM sources ORDER BY id",
+            (),
         )
-        .fetch_all(&self.pool)
         .await
     }
 
-    pub async fn get_source(&self, id: i64) -> sqlx::Result<Option<Source>> {
-        sqlx::query_as::<_, Source>(
+    pub async fn get_source(&self, id: i64) -> DbResult<Option<Source>> {
+        self.query_opt::<Source>(
             "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
              FROM sources WHERE id = ?",
+            libsql::params![id],
         )
-        .bind(id)
-        .fetch_optional(&self.pool)
         .await
     }
 
-    pub async fn source_by_link(&self, link: &str) -> sqlx::Result<Option<Source>> {
-        sqlx::query_as::<_, Source>(
+    pub async fn source_by_link(&self, link: &str) -> DbResult<Option<Source>> {
+        self.query_opt::<Source>(
             "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
              FROM sources WHERE link = ? LIMIT 1",
+            libsql::params![link],
         )
-        .bind(link)
-        .fetch_optional(&self.pool)
         .await
     }
 
-    pub async fn insert_source(&self, link: &str, title: &str) -> sqlx::Result<i64> {
-        let result = sqlx::query(
+    pub async fn insert_source(&self, link: &str, title: &str) -> DbResult<i64> {
+        self.exec(
             "INSERT INTO sources (link, title, error_count, created_at, updated_at, next_fetch_at) \
              VALUES (?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
+            libsql::params![link, title],
         )
-        .bind(link)
-        .bind(title)
-        .execute(&self.pool)
         .await?;
-        Ok(result.last_insert_rowid())
+        Ok(self.conn().last_insert_rowid())
     }
 
-    pub async fn sources_due(&self, now: i64, limit: i64) -> sqlx::Result<Vec<Source>> {
-        sqlx::query_as::<_, Source>(
+    pub async fn sources_due(&self, now: i64, limit: i64) -> DbResult<Vec<Source>> {
+        self.query_all::<Source>(
             "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
              FROM sources \
              WHERE COALESCE(next_fetch_at, 0) <= ? AND COALESCE(error_count, 0) < 100 \
              ORDER BY COALESCE(next_fetch_at, 0), id LIMIT ?",
+            libsql::params![now, limit],
         )
-        .bind(now)
-        .bind(limit)
-        .fetch_all(&self.pool)
         .await
     }
 
-    pub async fn subscribe_user(&self, user_id: i64, source_id: i64) -> sqlx::Result<bool> {
+    pub async fn subscribe_user(&self, user_id: i64, source_id: i64) -> DbResult<bool> {
         self.ensure_user(user_id).await?;
         if self.subscription(user_id, source_id).await?.is_some() {
             return Ok(false);
         }
-        sqlx::query(
+        self.exec(
             "INSERT INTO subscribes \
              (user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at) \
              VALUES (?, ?, 1, 1, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            libsql::params![user_id, source_id],
         )
-        .bind(user_id)
-        .bind(source_id)
-        .execute(&self.pool)
         .await?;
         Ok(true)
     }
@@ -125,27 +229,26 @@ impl Repo {
         &self,
         user_id: i64,
         source_id: i64,
-    ) -> sqlx::Result<Option<Subscribe>> {
-        sqlx::query_as::<_, Subscribe>(
+    ) -> DbResult<Option<Subscribe>> {
+        self.query_opt::<Subscribe>(
             "SELECT id, user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at \
              FROM subscribes WHERE user_id = ? AND source_id = ? LIMIT 1",
+            libsql::params![user_id, source_id],
         )
-        .bind(user_id)
-        .bind(source_id)
-        .fetch_optional(&self.pool)
         .await
     }
 
     /// Port of Go's `Core.Unsubscribe`: removes the subscription, then removes
     /// the source (and its dedup content ledger) once it has no subscribers
     /// left, matching `removeSource`.
-    pub async fn unsubscribe_user(&self, user_id: i64, source_id: i64) -> sqlx::Result<bool> {
-        let result = sqlx::query("DELETE FROM subscribes WHERE user_id = ? AND source_id = ?")
-            .bind(user_id)
-            .bind(source_id)
-            .execute(&self.pool)
+    pub async fn unsubscribe_user(&self, user_id: i64, source_id: i64) -> DbResult<bool> {
+        let affected = self
+            .exec(
+                "DELETE FROM subscribes WHERE user_id = ? AND source_id = ?",
+                libsql::params![user_id, source_id],
+            )
             .await?;
-        if result.rows_affected() == 0 {
+        if affected == 0 {
             return Ok(false);
         }
         if self.count_source_subscriptions(source_id).await? == 0 {
@@ -156,17 +259,19 @@ impl Repo {
 
     /// Port of Go's `Core.UnsubscribeAllSource`: same per-source cascade as
     /// `unsubscribe_user`, applied to every source the user is subscribed to.
-    pub async fn unsubscribe_all_user(&self, user_id: i64) -> sqlx::Result<u64> {
-        let source_ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT DISTINCT source_id FROM subscribes WHERE user_id = ? AND source_id IS NOT NULL",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?;
+    pub async fn unsubscribe_all_user(&self, user_id: i64) -> DbResult<u64> {
+        let source_ids = self
+            .scalar_all_i64(
+                "SELECT DISTINCT source_id FROM subscribes WHERE user_id = ? AND source_id IS NOT NULL",
+                libsql::params![user_id],
+            )
+            .await?;
 
-        let result = sqlx::query("DELETE FROM subscribes WHERE user_id = ?")
-            .bind(user_id)
-            .execute(&self.pool)
+        let affected = self
+            .exec(
+                "DELETE FROM subscribes WHERE user_id = ?",
+                libsql::params![user_id],
+            )
             .await?;
 
         for source_id in source_ids {
@@ -174,67 +279,68 @@ impl Repo {
                 self.delete_source_and_contents(source_id).await?;
             }
         }
-        Ok(result.rows_affected())
+        Ok(affected)
     }
 
-    pub async fn count_source_subscriptions(&self, source_id: i64) -> sqlx::Result<i64> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM subscribes WHERE source_id = ?")
-            .bind(source_id)
-            .fetch_one(&self.pool)
-            .await
+    pub async fn count_source_subscriptions(&self, source_id: i64) -> DbResult<i64> {
+        self.scalar_i64(
+            "SELECT COUNT(*) FROM subscribes WHERE source_id = ?",
+            libsql::params![source_id],
+        )
+        .await
     }
 
-    pub async fn delete_source_and_contents(&self, source_id: i64) -> sqlx::Result<()> {
-        sqlx::query("DELETE FROM contents WHERE source_id = ?")
-            .bind(source_id)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("DELETE FROM sources WHERE id = ?")
-            .bind(source_id)
-            .execute(&self.pool)
-            .await?;
+    pub async fn delete_source_and_contents(&self, source_id: i64) -> DbResult<()> {
+        self.exec(
+            "DELETE FROM contents WHERE source_id = ?",
+            libsql::params![source_id],
+        )
+        .await?;
+        self.exec(
+            "DELETE FROM sources WHERE id = ?",
+            libsql::params![source_id],
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn subscriptions_for_user(
         &self,
         user_id: i64,
-    ) -> sqlx::Result<Vec<SubscriptionSource>> {
-        sqlx::query_as::<_, SubscriptionSource>(
+    ) -> DbResult<Vec<SubscriptionSource>> {
+        self.query_all::<SubscriptionSource>(
             "SELECT subscribes.id AS subscribe_id, subscribes.user_id, subscribes.source_id, \
                     subscribes.enable_notification, subscribes.enable_telegraph, subscribes.tag, \
                     subscribes.interval, subscribes.wait_time, sources.link, sources.title \
              FROM subscribes JOIN sources ON sources.id = subscribes.source_id \
              WHERE subscribes.user_id = ? ORDER BY sources.id",
+            libsql::params![user_id],
         )
-        .bind(user_id)
-        .fetch_all(&self.pool)
         .await
     }
 
-    pub async fn mark_user_sources_due(&self, user_id: i64) -> sqlx::Result<u64> {
-        let result = sqlx::query(
+    pub async fn mark_user_sources_due(&self, user_id: i64) -> DbResult<u64> {
+        self.exec(
             "UPDATE sources \
              SET next_fetch_at = 0, error_count = 0, updated_at = CURRENT_TIMESTAMP \
              WHERE id IN (SELECT source_id FROM subscribes WHERE user_id = ? AND source_id IS NOT NULL)",
+            libsql::params![user_id],
         )
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
+        .await
     }
 
-    pub async fn get_option(&self, name: &str) -> sqlx::Result<Option<String>> {
-        sqlx::query_scalar("SELECT value FROM options WHERE name = ? ORDER BY id DESC LIMIT 1")
-            .bind(name)
-            .fetch_optional(&self.pool)
-            .await
+    pub async fn get_option(&self, name: &str) -> DbResult<Option<String>> {
+        self.scalar_opt_string(
+            "SELECT value FROM options WHERE name = ? ORDER BY id DESC LIMIT 1",
+            libsql::params![name],
+        )
+        .await
     }
 
     /// Chat ids whose option `{prefix}{chat_id}` is explicitly off (value
     /// `"0"`). Opt-out semantics: absence of a row means the feature is on, so
     /// this returns only the (usually few) chats that turned it off.
-    pub async fn chat_ids_with_option_off(&self, prefix: &str) -> sqlx::Result<HashSet<i64>> {
+    pub async fn chat_ids_with_option_off(&self, prefix: &str) -> DbResult<HashSet<i64>> {
         // Escape LIKE metacharacters in the (trusted, but let's be tidy) prefix.
         let mut pattern = String::with_capacity(prefix.len() + 1);
         for ch in prefix.chars() {
@@ -244,26 +350,24 @@ impl Repo {
             pattern.push(ch);
         }
         pattern.push('%');
-        let names: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM options WHERE name LIKE ? ESCAPE '\\' AND value = '0'",
-        )
-        .bind(pattern)
-        .fetch_all(&self.pool)
-        .await?;
+        let names = self
+            .scalar_all_string(
+                "SELECT name FROM options WHERE name LIKE ? ESCAPE '\\' AND value = '0'",
+                libsql::params![pattern],
+            )
+            .await?;
         Ok(names
             .into_iter()
             .filter_map(|name| name.strip_prefix(prefix).and_then(|s| s.parse::<i64>().ok()))
             .collect())
     }
 
-    pub async fn set_option(&self, name: &str, value: &str) -> sqlx::Result<()> {
-        sqlx::query(
+    pub async fn set_option(&self, name: &str, value: &str) -> DbResult<()> {
+        self.exec(
             "INSERT INTO options (name, value, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \
              ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+            libsql::params![name, value],
         )
-        .bind(name)
-        .bind(value)
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -273,16 +377,14 @@ impl Repo {
         user_id: i64,
         source_id: i64,
         tag: &str,
-    ) -> sqlx::Result<bool> {
-        let result = sqlx::query(
-            "UPDATE subscribes SET tag = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
-        )
-        .bind(tag)
-        .bind(user_id)
-        .bind(source_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
+    ) -> DbResult<bool> {
+        let affected = self
+            .exec(
+                "UPDATE subscribes SET tag = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
+                libsql::params![tag, user_id, source_id],
+            )
+            .await?;
+        Ok(affected > 0)
     }
 
     pub async fn set_subscription_interval(
@@ -290,38 +392,33 @@ impl Repo {
         user_id: i64,
         source_id: i64,
         interval: i64,
-    ) -> sqlx::Result<bool> {
-        let result = sqlx::query(
-            "UPDATE subscribes SET interval = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
-        )
-        .bind(interval)
-        .bind(user_id)
-        .bind(source_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
+    ) -> DbResult<bool> {
+        let affected = self
+            .exec(
+                "UPDATE subscribes SET interval = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND source_id = ?",
+                libsql::params![interval, user_id, source_id],
+            )
+            .await?;
+        Ok(affected > 0)
     }
 
     pub async fn set_all_subscription_interval(
         &self,
         user_id: i64,
         interval: i64,
-    ) -> sqlx::Result<u64> {
-        let result = sqlx::query(
+    ) -> DbResult<u64> {
+        self.exec(
             "UPDATE subscribes SET interval = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+            libsql::params![interval, user_id],
         )
-        .bind(interval)
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
+        .await
     }
 
     pub async fn toggle_subscription_notice(
         &self,
         user_id: i64,
         source_id: i64,
-    ) -> sqlx::Result<Option<Subscribe>> {
+    ) -> DbResult<Option<Subscribe>> {
         let Some(sub) = self.subscription(user_id, source_id).await? else {
             return Ok(None);
         };
@@ -330,14 +427,11 @@ impl Repo {
         } else {
             1
         };
-        sqlx::query(
+        self.exec(
             "UPDATE subscribes SET enable_notification = ?, updated_at = CURRENT_TIMESTAMP \
              WHERE user_id = ? AND source_id = ?",
+            libsql::params![new_value, user_id, source_id],
         )
-        .bind(new_value)
-        .bind(user_id)
-        .bind(source_id)
-        .execute(&self.pool)
         .await?;
         self.subscription(user_id, source_id).await
     }
@@ -346,7 +440,7 @@ impl Repo {
         &self,
         user_id: i64,
         source_id: i64,
-    ) -> sqlx::Result<Option<Subscribe>> {
+    ) -> DbResult<Option<Subscribe>> {
         let Some(sub) = self.subscription(user_id, source_id).await? else {
             return Ok(None);
         };
@@ -355,14 +449,11 @@ impl Repo {
         } else {
             1
         };
-        sqlx::query(
+        self.exec(
             "UPDATE subscribes SET enable_telegraph = ?, updated_at = CURRENT_TIMESTAMP \
              WHERE user_id = ? AND source_id = ?",
+            libsql::params![new_value, user_id, source_id],
         )
-        .bind(new_value)
-        .bind(user_id)
-        .bind(source_id)
-        .execute(&self.pool)
         .await?;
         self.subscription(user_id, source_id).await
     }
@@ -370,25 +461,22 @@ impl Repo {
     /// Port of Go's `Core.EnableSourceUpdate` / `ClearSourceErrorCount`: this
     /// pauses/resumes the *source* for all its subscribers (not a per-user
     /// flag), by clearing its `error_count` below `ERROR_THRESHOLD`.
-    pub async fn enable_source_update(&self, source_id: i64) -> sqlx::Result<()> {
-        sqlx::query(
+    pub async fn enable_source_update(&self, source_id: i64) -> DbResult<()> {
+        self.exec(
             "UPDATE sources SET error_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            libsql::params![source_id],
         )
-        .bind(source_id)
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     /// Port of Go's `Core.DisableSourceUpdate`: sets `error_count` one past
     /// `ERROR_THRESHOLD` so the scheduler's `sources_due` query skips it.
-    pub async fn disable_source_update(&self, source_id: i64) -> sqlx::Result<()> {
-        sqlx::query(
+    pub async fn disable_source_update(&self, source_id: i64) -> DbResult<()> {
+        self.exec(
             "UPDATE sources SET error_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            libsql::params![i64::from(ERROR_THRESHOLD) + 1, source_id],
         )
-        .bind(i64::from(ERROR_THRESHOLD) + 1)
-        .bind(source_id)
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -397,7 +485,7 @@ impl Repo {
     pub async fn toggle_source_update_status(
         &self,
         source_id: i64,
-    ) -> sqlx::Result<Option<Source>> {
+    ) -> DbResult<Option<Source>> {
         let Some(source) = self.get_source(source_id).await? else {
             return Ok(None);
         };
@@ -409,13 +497,12 @@ impl Repo {
         self.get_source(source_id).await
     }
 
-    pub async fn subscribes_for_source(&self, source_id: i64) -> sqlx::Result<Vec<Subscribe>> {
-        sqlx::query_as::<_, Subscribe>(
+    pub async fn subscribes_for_source(&self, source_id: i64) -> DbResult<Vec<Subscribe>> {
+        self.query_all::<Subscribe>(
             "SELECT id, user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at \
              FROM subscribes WHERE source_id = ? ORDER BY id",
+            libsql::params![source_id],
         )
-        .bind(source_id)
-        .fetch_all(&self.pool)
         .await
     }
 
@@ -423,56 +510,51 @@ impl Repo {
         &self,
         source_id: i64,
         hash_ids: &[String],
-    ) -> sqlx::Result<HashSet<String>> {
+    ) -> DbResult<HashSet<String>> {
         let mut found = HashSet::new();
         for chunk in hash_ids.chunks(500) {
             if chunk.is_empty() {
                 continue;
             }
-            let mut builder =
-                QueryBuilder::<Sqlite>::new("SELECT hash_id FROM contents WHERE source_id = ");
-            builder.push_bind(source_id).push(" AND hash_id IN (");
-            let mut separated = builder.separated(",");
-            for hash in chunk {
-                separated.push_bind(hash);
-            }
-            separated.push_unseparated(")");
-            found.extend(
-                builder
-                    .build_query_scalar::<String>()
-                    .fetch_all(&self.pool)
-                    .await?,
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT hash_id FROM contents WHERE source_id = ? AND hash_id IN ({placeholders})"
             );
+            let mut params: Vec<Value> = Vec::with_capacity(chunk.len() + 1);
+            params.push(Value::from(source_id));
+            for hash in chunk {
+                params.push(Value::from(hash.clone()));
+            }
+            found.extend(self.scalar_all_string(&sql, params).await?);
         }
         Ok(found)
     }
 
-    pub async fn insert_content(&self, content: &Content) -> sqlx::Result<()> {
-        sqlx::query(
+    pub async fn insert_content(&self, content: &Content) -> DbResult<()> {
+        self.exec(
             "INSERT OR IGNORE INTO contents \
              (source_id, hash_id, raw_id, raw_link, title, telegraph_url, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            libsql::params![
+                content.source_id,
+                content.hash_id.as_str(),
+                content.raw_id.as_deref(),
+                content.raw_link.as_deref(),
+                content.title.as_deref(),
+                content.telegraph_url.as_deref(),
+            ],
         )
-        .bind(content.source_id)
-        .bind(&content.hash_id)
-        .bind(&content.raw_id)
-        .bind(&content.raw_link)
-        .bind(&content.title)
-        .bind(&content.telegraph_url)
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    pub async fn mark_source_error(&self, source_id: i64, next_fetch_at: i64) -> sqlx::Result<()> {
-        sqlx::query(
+    pub async fn mark_source_error(&self, source_id: i64, next_fetch_at: i64) -> DbResult<()> {
+        self.exec(
             "UPDATE sources \
              SET error_count = COALESCE(error_count, 0) + 1, next_fetch_at = ?, updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?",
+            libsql::params![next_fetch_at, source_id],
         )
-        .bind(next_fetch_at)
-        .bind(source_id)
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -483,18 +565,14 @@ impl Repo {
         etag: Option<&str>,
         last_modified: Option<&str>,
         next_fetch_at: i64,
-    ) -> sqlx::Result<()> {
-        sqlx::query(
+    ) -> DbResult<()> {
+        self.exec(
             "UPDATE sources \
              SET error_count = 0, etag = COALESCE(?, etag), last_modified = COALESCE(?, last_modified), \
                  next_fetch_at = ?, updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?",
+            libsql::params![etag, last_modified, next_fetch_at, source_id],
         )
-        .bind(etag)
-        .bind(last_modified)
-        .bind(next_fetch_at)
-        .bind(source_id)
-        .execute(&self.pool)
         .await?;
         Ok(())
     }
@@ -504,23 +582,18 @@ impl Repo {
         source_id: i64,
         retention_days: u32,
         keep_recent: u32,
-    ) -> sqlx::Result<u64> {
+    ) -> DbResult<u64> {
         let modifier = format!("-{} days", retention_days);
-        let result = sqlx::query(
+        self.exec(
             "DELETE FROM contents \
              WHERE source_id = ? \
                AND created_at < datetime('now', ?) \
                AND hash_id NOT IN ( \
                  SELECT hash_id FROM contents WHERE source_id = ? ORDER BY created_at DESC LIMIT ? \
                )",
+            libsql::params![source_id, modifier, source_id, i64::from(keep_recent)],
         )
-        .bind(source_id)
-        .bind(modifier)
-        .bind(source_id)
-        .bind(i64::from(keep_recent))
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
+        .await
     }
 }
 
@@ -533,13 +606,15 @@ mod tests {
     async fn repo_opens_fresh_db_and_dedups_hashes() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
-        let repo = Repo::new(pool.clone());
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
 
-        sqlx::query("INSERT INTO sources (id, link, title, error_count, next_fetch_at) VALUES (1, 'https://e.test/feed', 'E', 0, 0)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        repo.exec(
+            "INSERT INTO sources (id, link, title, error_count, next_fetch_at) VALUES (1, 'https://e.test/feed', 'E', 0, 0)",
+            (),
+        )
+        .await
+        .unwrap();
 
         let due = repo.sources_due(0, 10).await.unwrap();
         assert_eq!(due.len(), 1);
@@ -569,8 +644,8 @@ mod tests {
     async fn repo_ensures_users_and_inserts_sources() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
-        let repo = Repo::new(pool);
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
 
         repo.ensure_user(-100).await.unwrap();
         repo.ensure_user(-100).await.unwrap();
@@ -596,8 +671,8 @@ mod tests {
     async fn subscription_crud_methods_work() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
-        let repo = Repo::new(pool);
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
 
         let source_id = repo
             .insert_source("https://example.com/feed", "Example")
@@ -622,19 +697,20 @@ mod tests {
     async fn mark_user_sources_due_resumes_and_schedules_now() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
-        let repo = Repo::new(pool.clone());
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
 
         let source_id = repo
             .insert_source("https://example.com/feed", "Example")
             .await
             .unwrap();
         repo.subscribe_user(42, source_id).await.unwrap();
-        sqlx::query("UPDATE sources SET next_fetch_at = 999999, error_count = 101 WHERE id = ?")
-            .bind(source_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+        repo.exec(
+            "UPDATE sources SET next_fetch_at = 999999, error_count = 101 WHERE id = ?",
+            libsql::params![source_id],
+        )
+        .await
+        .unwrap();
 
         assert_eq!(repo.mark_user_sources_due(42).await.unwrap(), 1);
         let source = repo.get_source(source_id).await.unwrap().unwrap();
@@ -646,8 +722,8 @@ mod tests {
     async fn unsubscribe_cascades_to_orphan_source() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
-        let repo = Repo::new(pool);
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
 
         let source_id = repo
             .insert_source("https://example.com/feed", "Example")
@@ -686,8 +762,8 @@ mod tests {
     async fn source_update_toggle_matches_error_threshold_semantics() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
-        let repo = Repo::new(pool);
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
 
         let source_id = repo
             .insert_source("https://example.com/feed", "Example")
@@ -740,8 +816,8 @@ mod tests {
     async fn subscription_notice_and_telegraph_toggle() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
-        let repo = Repo::new(pool);
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
 
         let source_id = repo
             .insert_source("https://example.com/feed", "Example")
@@ -780,23 +856,26 @@ mod tests {
     async fn prune_contents_keeps_recent_baseline() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
-        let repo = Repo::new(pool.clone());
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
 
-        sqlx::query("INSERT INTO sources (id, link, title, error_count, next_fetch_at) VALUES (1, 'https://e.test/feed', 'E', 0, 0)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        repo.exec(
+            "INSERT INTO sources (id, link, title, error_count, next_fetch_at) VALUES (1, 'https://e.test/feed', 'E', 0, 0)",
+            (),
+        )
+        .await
+        .unwrap();
 
         for i in 0..5 {
-            sqlx::query(
+            repo.exec(
                 "INSERT INTO contents (source_id, hash_id, title, created_at, updated_at) VALUES (1, ?, ?, ?, ?)",
+                libsql::params![
+                    format!("h{i}"),
+                    format!("title {i}"),
+                    format!("2020-01-0{} 00:00:00", i + 1),
+                    format!("2020-01-0{} 00:00:00", i + 1),
+                ],
             )
-            .bind(format!("h{i}"))
-            .bind(format!("title {i}"))
-            .bind(format!("2020-01-0{} 00:00:00", i + 1))
-            .bind(format!("2020-01-0{} 00:00:00", i + 1))
-            .execute(&pool)
             .await
             .unwrap();
         }

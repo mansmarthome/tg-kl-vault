@@ -223,6 +223,19 @@ Every config value can be supplied through environment variables with the `FLOWE
 
 List values accept comma-separated values. Bracketed forms also work, for example `FLOWERSS_ALLOWED_USERS="[123,-100]"`.
 
+### 5b. Remote database (Turso embedded replica)
+
+The bot uses [libSQL](https://github.com/tursodatabase/libsql) for storage. By default it opens a plain local SQLite file at `FLOWERSS_SQLITE_PATH` — no configuration needed, and existing `data.db` files open as-is.
+
+Set both of the following to run instead as a **Turso embedded replica**: writes are sent to the remote Turso primary (durable immediately), reads are served from the local file, and a background task syncs every 60s. This gives you cloud persistence/backup and multi-location access without changing any application behaviour.
+
+| Env var | Example |
+|---|---|
+| `TURSO_DATABASE_URL` | `libsql://your-db.turso.io` |
+| `TURSO_AUTH_TOKEN` | (database auth token from `turso db tokens create`) |
+
+`FLOWERSS_SQLITE_PATH` is still used as the local replica file. Leave `TURSO_DATABASE_URL` unset for local-only mode. Schema migrations run automatically in both modes, and a database previously managed by the old sqlx-based build is detected (via its `_sqlx_migrations` table) so migrations are never re-applied.
+
 ### Bookmarks + AI auto-tagging
 
 Each chat has a bookmark library. A 🔖 button appears under every pushed item (toggle it in `/settings → 🔖 Bookmarks`), and `/bm <url>` bookmarks any URL. Saving replies immediately; a background worker then auto-tags the bookmark and edits the message. See `docs/usage.md` for the command list.
