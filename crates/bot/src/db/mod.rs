@@ -72,6 +72,60 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// libsql embedded replicas pair the db file with a `{path}-info` metadata
+/// sidecar. Opening a pre-existing plain sqlite file (no sidecar) fails with
+/// "db file exists but metadata file does not". When we hit that orphan state,
+/// rename the local file(s) aside so the replica can bootstrap from remote.
+///
+/// The backup is kept so operators can import it into Turso if the remote was
+/// empty and the local file still held production data.
+fn prepare_local_path_for_replica(path: &str) -> anyhow::Result<()> {
+    let db = Path::new(path);
+    let info_path = format!("{path}-info");
+    let info = Path::new(&info_path);
+    let db_exists = db.exists();
+    let info_exists = info.exists();
+
+    match (db_exists, info_exists) {
+        // Fresh start or already a valid replica — nothing to do.
+        (false, false) | (true, true) => Ok(()),
+        // Orphan metadata without db: drop the sidecar so bootstrap can run.
+        (false, true) => {
+            warn!(
+                metadata = %info.display(),
+                "found orphan replica metadata without db file; removing so bootstrap can proceed"
+            );
+            std::fs::remove_file(info)
+                .with_context(|| format!("remove orphan metadata {}", info.display()))?;
+            Ok(())
+        }
+        // Plain local sqlite (or half-broken replica): move aside.
+        (true, false) => {
+            let stamp = now_unix();
+            let backup_path = format!("{path}.pre-turso.{stamp}.bak");
+            let backup = Path::new(&backup_path);
+            warn!(
+                db_path = %db.display(),
+                backup = %backup.display(),
+                "local sqlite has no replica metadata (-info); moving it aside so Turso can bootstrap a fresh replica. If the remote primary is empty, import this backup into Turso before relying on cloud data."
+            );
+            std::fs::rename(db, backup)
+                .with_context(|| format!("rename {} -> {}", db.display(), backup.display()))?;
+            // Best-effort: also park WAL/SHM companions if present.
+            for suffix in ["-wal", "-shm"] {
+                let side_path = format!("{path}{suffix}");
+                let side = Path::new(&side_path);
+                if side.exists() {
+                    let side_bak_path = format!("{path}{suffix}.pre-turso.{stamp}.bak");
+                    let side_bak = Path::new(&side_bak_path);
+                    let _ = std::fs::rename(side, side_bak);
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Opens the database. Two modes, chosen by env so existing local-file
 /// deployments keep working with zero configuration:
 ///
@@ -98,6 +152,12 @@ pub async fn connect(path: &str) -> anyhow::Result<Arc<Db>> {
 
     let database = match turso_url {
         Some(url) => {
+            // Embedded replicas keep a sidecar `{path}-info` metadata file. A
+            // plain local sqlite left over from pre-Turso deploys has the db
+            // file but no metadata, and libsql refuses to open that state with
+            // "db file exists but metadata file does not". Move the orphan
+            // aside so we can bootstrap a fresh replica from the remote primary.
+            prepare_local_path_for_replica(path)?;
             let token = std::env::var("TURSO_AUTH_TOKEN").unwrap_or_default();
             info!(db_path = %absolute, "opening Turso embedded replica (write-through to remote primary)");
             Builder::new_remote_replica(path, url, token)
@@ -182,4 +242,58 @@ async fn read_versions(conn: &Connection, sql: &str) -> HashSet<i64> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn prepare_replica_moves_orphan_plain_sqlite_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        fs::write(&db_path, b"sqlite-bytes").unwrap();
+        fs::write(dir.path().join("data.db-wal"), b"wal").unwrap();
+
+        prepare_local_path_for_replica(db_path.to_str().unwrap()).unwrap();
+
+        assert!(!db_path.exists(), "orphan db must be moved aside");
+        assert!(!dir.path().join("data.db-wal").exists());
+        let backups: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".pre-turso."))
+            .collect();
+        assert!(backups.iter().any(|n| n.starts_with("data.db.pre-turso.")));
+        assert!(backups.iter().any(|n| n.starts_with("data.db-wal.pre-turso.")));
+    }
+
+    #[test]
+    fn prepare_replica_noop_when_pair_is_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        fs::write(&db_path, b"sqlite-bytes").unwrap();
+        let info_path = format!("{}-info", db_path.display());
+        fs::write(&info_path, b"{}").unwrap();
+
+        prepare_local_path_for_replica(db_path.to_str().unwrap()).unwrap();
+
+        assert!(db_path.exists());
+        assert!(Path::new(&info_path).exists());
+    }
+
+    #[test]
+    fn prepare_replica_drops_orphan_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let info = dir.path().join("data.db-info");
+        fs::write(&info, b"{}").unwrap();
+
+        prepare_local_path_for_replica(db_path.to_str().unwrap()).unwrap();
+
+        assert!(!info.exists());
+        assert!(!db_path.exists());
+    }
 }
