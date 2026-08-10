@@ -236,6 +236,8 @@ Set both of the following to run instead as a **Turso embedded replica**: writes
 
 `FLOWERSS_SQLITE_PATH` is still used as the local replica file. Leave `TURSO_DATABASE_URL` unset for local-only mode. Schema migrations run automatically in both modes, and a database previously managed by the old sqlx-based build is detected (via its `_sqlx_migrations` table) so migrations are never re-applied.
 
+**First enablement note.** An embedded replica needs a sidecar `{path}-info` metadata file next to the local db. A plain pre-Turso `data.db` has no such file, and libsql refuses that state (`db file exists but metadata file does not`). On startup the bot detects this orphan state, renames the local file to `{path}.pre-turso.<ts>.bak` (plus `-wal`/`-shm` if present), then bootstraps a fresh replica from the remote primary. If the remote is still empty and you need the old local data, import the `.bak` into Turso first (e.g. `sqlite3 data.db.pre-turso.*.bak .dump | turso db shell <name>`), then restart.
+
 ### Bookmarks + AI auto-tagging
 
 Each chat has a bookmark library. A 🔖 button appears under every pushed item (toggle it in `/settings → 🔖 Bookmarks`), and `/bm <url>` bookmarks any URL. Saving replies immediately; a background worker then auto-tags the bookmark and edits the message. See `docs/usage.md` for the command list.
