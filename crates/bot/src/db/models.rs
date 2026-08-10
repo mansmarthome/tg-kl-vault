@@ -1,15 +1,26 @@
-use sqlx::FromRow;
+use super::FromRow;
+use libsql::Row;
 
 /// GORM stored timestamps as SQLite datetime strings. Keep them as strings in
 /// phase 1 until we verify a real production data.db sample.
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
     pub id: i64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+impl FromRow for User {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            created_at: row.get(1)?,
+            updated_at: row.get(2)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
     pub id: i64,
     pub link: Option<String>,
@@ -22,7 +33,23 @@ pub struct Source {
     pub next_fetch_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+impl FromRow for Source {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            link: row.get(1)?,
+            title: row.get(2)?,
+            error_count: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
+            etag: row.get(6)?,
+            last_modified: row.get(7)?,
+            next_fetch_at: row.get(8)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subscribe {
     pub id: i64,
     pub user_id: Option<i64>,
@@ -36,7 +63,24 @@ pub struct Subscribe {
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+impl FromRow for Subscribe {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            user_id: row.get(1)?,
+            source_id: row.get(2)?,
+            enable_notification: row.get(3)?,
+            enable_telegraph: row.get(4)?,
+            tag: row.get(5)?,
+            interval: row.get(6)?,
+            wait_time: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Content {
     pub source_id: Option<i64>,
     pub hash_id: String,
@@ -48,10 +92,25 @@ pub struct Content {
     pub updated_at: Option<String>,
 }
 
+impl FromRow for Content {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            source_id: row.get(0)?,
+            hash_id: row.get(1)?,
+            raw_id: row.get(2)?,
+            raw_link: row.get(3)?,
+            title: row.get(4)?,
+            telegraph_url: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    }
+}
+
 /// A per-chat bookmark. Self-contained: `title`/`url`/`source_title` are
 /// snapshots so a bookmark renders even after `contents`/`sources` are pruned;
 /// `content_hash_id` is a breadcrumb only and may dangle.
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bookmark {
     pub id: i64,
     pub chat_id: i64,
@@ -71,18 +130,63 @@ pub struct Bookmark {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+impl FromRow for Bookmark {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            chat_id: row.get(1)?,
+            created_by: row.get(2)?,
+            url: row.get(3)?,
+            title: row.get(4)?,
+            note: row.get(5)?,
+            source_title: row.get(6)?,
+            content_hash_id: row.get(7)?,
+            telegraph_url: row.get(8)?,
+            tag_state: row.get(9)?,
+            tag_attempts: row.get(10)?,
+            tag_next_attempt_at: row.get(11)?,
+            notify_message_id: row.get(12)?,
+            notify_kind: row.get(13)?,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookmarkTag {
     pub bookmark_id: i64,
     pub tag: String,
     pub origin: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+impl FromRow for BookmarkTag {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            bookmark_id: row.get(0)?,
+            tag: row.get(1)?,
+            origin: row.get(2)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionRow {
     pub id: i64,
     pub name: Option<String>,
     pub value: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+impl FromRow for OptionRow {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            value: row.get(2)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
+        })
+    }
 }

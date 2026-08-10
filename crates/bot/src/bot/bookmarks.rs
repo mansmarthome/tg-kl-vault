@@ -401,7 +401,7 @@ async fn build_list_view(
     scope: Scope,
     requested_page: usize,
     lang: Lang,
-) -> sqlx::Result<(String, InlineKeyboardMarkup)> {
+) -> crate::db::DbResult<(String, InlineKeyboardMarkup)> {
     let per_page = state.config.bookmark.ai.page_size.max(1) as usize;
     let total = match scope {
         Scope::All => state.repo.count_bookmarks(chat_id).await?,
@@ -1000,7 +1000,7 @@ async fn render_settings_bm(
     Ok(())
 }
 
-async fn toggle_option(state: &BotState, key: &str) -> sqlx::Result<()> {
+async fn toggle_option(state: &BotState, key: &str) -> crate::db::DbResult<()> {
     let on = option_on(state, key).await;
     state.repo.set_option(key, if on { "0" } else { "1" }).await
 }

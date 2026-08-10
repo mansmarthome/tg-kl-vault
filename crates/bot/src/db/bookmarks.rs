@@ -1,24 +1,16 @@
-//! Repo methods for the per-chat bookmark library. A second `impl Repo` block
-//! (allowed: `Repo::pool()` is already public), raw SQL with `?` binds,
-//! following the conventions in `repo.rs`.
+//! Repo methods for the per-chat bookmark library. A second `impl Repo` block,
+//! raw SQL with `?` binds, following the conventions in `repo.rs`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sqlx::{AssertSqlSafe, QueryBuilder, Sqlite};
+use libsql::Value;
 
 use super::models::{Bookmark, BookmarkTag, Content};
 use super::repo::Repo;
+use super::DbResult;
 
-/// sqlx 0.9 only accepts `&'static str` SQL by default. These query strings
-/// interpolate `BOOKMARK_COLS` (a compile-time const) and nothing else — no
-/// caller input reaches the SQL text — so asserting them safe is sound. All
-/// runtime values go through `?` binds.
-fn safe(sql: String) -> AssertSqlSafe<String> {
-    AssertSqlSafe(sql)
-}
-
-/// Column list matching `models::Bookmark`. `FromRow` binds by name, but being
-/// explicit keeps the read path stable if the table grows.
+/// Column list matching `models::Bookmark`. Read paths bind positionally, so
+/// this must stay in sync with `Bookmark::from_row`.
 const BOOKMARK_COLS: &str = "id, chat_id, created_by, url, title, note, source_title, \
      content_hash_id, telegraph_url, tag_state, tag_attempts, tag_next_attempt_at, \
      notify_message_id, notify_kind, created_at, updated_at";
@@ -81,31 +73,34 @@ impl Repo {
     /// UPDATE` branch would hand back a *stale* id and the caller would bind a
     /// keyboard to someone else's bookmark. `existed` is derived by comparing
     /// the returned `created_at` against `now`.
-    pub async fn upsert_bookmark(&self, new: &NewBookmark<'_>) -> sqlx::Result<UpsertOutcome> {
+    pub async fn upsert_bookmark(&self, new: &NewBookmark<'_>) -> DbResult<UpsertOutcome> {
         let now = now_unix();
-        let row: (i64, i64) = sqlx::query_as(
-            "INSERT INTO bookmarks \
-             (chat_id, created_by, url, title, note, source_title, content_hash_id, \
-              telegraph_url, tag_state, tag_attempts, tag_next_attempt_at, notify_message_id, \
-              notify_kind, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, NULL, ?, ?, ?) \
-             ON CONFLICT(chat_id, url) DO UPDATE SET updated_at = excluded.updated_at \
-             RETURNING id, created_at",
-        )
-        .bind(new.chat_id)
-        .bind(new.created_by)
-        .bind(new.url)
-        .bind(new.title)
-        .bind(new.note)
-        .bind(new.source_title)
-        .bind(new.content_hash_id)
-        .bind(new.telegraph_url)
-        .bind(new.tag_next_attempt_at)
-        .bind(new.notify_kind)
-        .bind(now)
-        .bind(now)
-        .fetch_one(self.pool())
-        .await?;
+        let row = self
+            .query_opt::<(i64, i64)>(
+                "INSERT INTO bookmarks \
+                 (chat_id, created_by, url, title, note, source_title, content_hash_id, \
+                  telegraph_url, tag_state, tag_attempts, tag_next_attempt_at, notify_message_id, \
+                  notify_kind, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, NULL, ?, ?, ?) \
+                 ON CONFLICT(chat_id, url) DO UPDATE SET updated_at = excluded.updated_at \
+                 RETURNING id, created_at",
+                libsql::params![
+                    new.chat_id,
+                    new.created_by,
+                    new.url,
+                    new.title,
+                    new.note,
+                    new.source_title,
+                    new.content_hash_id,
+                    new.telegraph_url,
+                    new.tag_next_attempt_at,
+                    new.notify_kind,
+                    now,
+                    now,
+                ],
+            )
+            .await?
+            .ok_or(libsql::Error::QueryReturnedNoRows)?;
         Ok(UpsertOutcome {
             id: row.0,
             existed: row.1 != now,
@@ -119,55 +114,49 @@ impl Repo {
         &self,
         id: i64,
         notify_message_id: i64,
-    ) -> sqlx::Result<Option<i64>> {
-        sqlx::query_scalar(
+    ) -> DbResult<Option<i64>> {
+        self.scalar_opt_i64(
             "UPDATE bookmarks SET notify_message_id = ?, updated_at = ? WHERE id = ? \
              RETURNING tag_state",
+            libsql::params![notify_message_id, now_unix(), id],
         )
-        .bind(notify_message_id)
-        .bind(now_unix())
-        .bind(id)
-        .fetch_optional(self.pool())
         .await
     }
 
-    pub async fn get_bookmark(&self, chat_id: i64, id: i64) -> sqlx::Result<Option<Bookmark>> {
-        sqlx::query_as::<_, Bookmark>(safe(format!(
-            "SELECT {BOOKMARK_COLS} FROM bookmarks WHERE chat_id = ? AND id = ?"
-        )))
-        .bind(chat_id)
-        .bind(id)
-        .fetch_optional(self.pool())
+    pub async fn get_bookmark(&self, chat_id: i64, id: i64) -> DbResult<Option<Bookmark>> {
+        self.query_opt::<Bookmark>(
+            &format!("SELECT {BOOKMARK_COLS} FROM bookmarks WHERE chat_id = ? AND id = ?"),
+            libsql::params![chat_id, id],
+        )
         .await
     }
 
     /// Unscoped lookup for the worker (which owns no chat context).
-    pub async fn get_bookmark_any(&self, id: i64) -> sqlx::Result<Option<Bookmark>> {
-        sqlx::query_as::<_, Bookmark>(safe(format!(
-            "SELECT {BOOKMARK_COLS} FROM bookmarks WHERE id = ?"
-        )))
-        .bind(id)
-        .fetch_optional(self.pool())
+    pub async fn get_bookmark_any(&self, id: i64) -> DbResult<Option<Bookmark>> {
+        self.query_opt::<Bookmark>(
+            &format!("SELECT {BOOKMARK_COLS} FROM bookmarks WHERE id = ?"),
+            libsql::params![id],
+        )
         .await
     }
 
     /// Looks up a content row by hash (the 🔖 button path). May return `None`
     /// if `prune_contents` already deleted it — callers must handle expiry.
-    pub async fn content_by_hash(&self, hash_id: &str) -> sqlx::Result<Option<Content>> {
-        sqlx::query_as::<_, Content>(
+    pub async fn content_by_hash(&self, hash_id: &str) -> DbResult<Option<Content>> {
+        self.query_opt::<Content>(
             "SELECT source_id, hash_id, raw_id, raw_link, title, telegraph_url, \
              created_at, updated_at FROM contents WHERE hash_id = ?",
+            libsql::params![hash_id],
         )
-        .bind(hash_id)
-        .fetch_optional(self.pool())
         .await
     }
 
-    pub async fn count_bookmarks(&self, chat_id: i64) -> sqlx::Result<i64> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM bookmarks WHERE chat_id = ?")
-            .bind(chat_id)
-            .fetch_one(self.pool())
-            .await
+    pub async fn count_bookmarks(&self, chat_id: i64) -> DbResult<i64> {
+        self.scalar_i64(
+            "SELECT COUNT(*) FROM bookmarks WHERE chat_id = ?",
+            libsql::params![chat_id],
+        )
+        .await
     }
 
     pub async fn bookmarks_page(
@@ -175,27 +164,24 @@ impl Repo {
         chat_id: i64,
         offset: i64,
         limit: i64,
-    ) -> sqlx::Result<Vec<Bookmark>> {
-        sqlx::query_as::<_, Bookmark>(safe(format!(
-            "SELECT {BOOKMARK_COLS} FROM bookmarks WHERE chat_id = ? \
-             ORDER BY id DESC LIMIT ? OFFSET ?"
-        )))
-        .bind(chat_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(self.pool())
+    ) -> DbResult<Vec<Bookmark>> {
+        self.query_all::<Bookmark>(
+            &format!(
+                "SELECT {BOOKMARK_COLS} FROM bookmarks WHERE chat_id = ? \
+                 ORDER BY id DESC LIMIT ? OFFSET ?"
+            ),
+            libsql::params![chat_id, limit, offset],
+        )
         .await
     }
 
-    pub async fn count_bookmarks_by_tag(&self, chat_id: i64, tag: &str) -> sqlx::Result<i64> {
-        sqlx::query_scalar(
+    pub async fn count_bookmarks_by_tag(&self, chat_id: i64, tag: &str) -> DbResult<i64> {
+        self.scalar_i64(
             "SELECT COUNT(*) FROM bookmarks b \
              JOIN bookmark_tags t ON t.bookmark_id = b.id \
              WHERE b.chat_id = ? AND t.tag = ?",
+            libsql::params![chat_id, tag],
         )
-        .bind(chat_id)
-        .bind(tag)
-        .fetch_one(self.pool())
         .await
     }
 
@@ -205,30 +191,27 @@ impl Repo {
         tag: &str,
         offset: i64,
         limit: i64,
-    ) -> sqlx::Result<Vec<Bookmark>> {
+    ) -> DbResult<Vec<Bookmark>> {
         // `bookmarks` and `bookmark_tags` share no column names, so the
         // unqualified `BOOKMARK_COLS` are unambiguous under the join.
-        sqlx::query_as::<_, Bookmark>(safe(format!(
-            "SELECT {BOOKMARK_COLS} FROM bookmarks b \
-             JOIN bookmark_tags t ON t.bookmark_id = b.id \
-             WHERE b.chat_id = ? AND t.tag = ? \
-             ORDER BY b.id DESC LIMIT ? OFFSET ?"
-        )))
-        .bind(chat_id)
-        .bind(tag)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(self.pool())
+        self.query_all::<Bookmark>(
+            &format!(
+                "SELECT {BOOKMARK_COLS} FROM bookmarks b \
+                 JOIN bookmark_tags t ON t.bookmark_id = b.id \
+                 WHERE b.chat_id = ? AND t.tag = ? \
+                 ORDER BY b.id DESC LIMIT ? OFFSET ?"
+            ),
+            libsql::params![chat_id, tag, limit, offset],
+        )
         .await
     }
 
-    pub async fn count_untagged(&self, chat_id: i64) -> sqlx::Result<i64> {
-        sqlx::query_scalar(
+    pub async fn count_untagged(&self, chat_id: i64) -> DbResult<i64> {
+        self.scalar_i64(
             "SELECT COUNT(*) FROM bookmarks b WHERE b.chat_id = ? \
              AND NOT EXISTS (SELECT 1 FROM bookmark_tags t WHERE t.bookmark_id = b.id)",
+            libsql::params![chat_id],
         )
-        .bind(chat_id)
-        .fetch_one(self.pool())
         .await
     }
 
@@ -237,16 +220,15 @@ impl Repo {
         chat_id: i64,
         offset: i64,
         limit: i64,
-    ) -> sqlx::Result<Vec<Bookmark>> {
-        sqlx::query_as::<_, Bookmark>(safe(format!(
-            "SELECT {BOOKMARK_COLS} FROM bookmarks b WHERE b.chat_id = ? \
-             AND NOT EXISTS (SELECT 1 FROM bookmark_tags t WHERE t.bookmark_id = b.id) \
-             ORDER BY b.id DESC LIMIT ? OFFSET ?"
-        )))
-        .bind(chat_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(self.pool())
+    ) -> DbResult<Vec<Bookmark>> {
+        self.query_all::<Bookmark>(
+            &format!(
+                "SELECT {BOOKMARK_COLS} FROM bookmarks b WHERE b.chat_id = ? \
+                 AND NOT EXISTS (SELECT 1 FROM bookmark_tags t WHERE t.bookmark_id = b.id) \
+                 ORDER BY b.id DESC LIMIT ? OFFSET ?"
+            ),
+            libsql::params![chat_id, limit, offset],
+        )
         .await
     }
 
@@ -258,59 +240,51 @@ impl Repo {
         chat_id: i64,
         query: &str,
         limit: i64,
-    ) -> sqlx::Result<Vec<Bookmark>> {
+    ) -> DbResult<Vec<Bookmark>> {
         let pattern = like_pattern(query);
         // Numbered params so the single `pattern` bind (?2) is reused by all
         // three LIKE clauses; ?1 = chat_id, ?3 = limit.
-        sqlx::query_as::<_, Bookmark>(safe(format!(
-            "SELECT {BOOKMARK_COLS} FROM bookmarks WHERE chat_id = ?1 \
-             AND (title LIKE ?2 ESCAPE '\\' OR url LIKE ?2 ESCAPE '\\' OR note LIKE ?2 ESCAPE '\\') \
-             ORDER BY id DESC LIMIT ?3"
-        )))
-        .bind(chat_id)
-        .bind(pattern)
-        .bind(limit)
-        .fetch_all(self.pool())
+        self.query_all::<Bookmark>(
+            &format!(
+                "SELECT {BOOKMARK_COLS} FROM bookmarks WHERE chat_id = ?1 \
+                 AND (title LIKE ?2 ESCAPE '\\' OR url LIKE ?2 ESCAPE '\\' OR note LIKE ?2 ESCAPE '\\') \
+                 ORDER BY id DESC LIMIT ?3"
+            ),
+            libsql::params![chat_id, pattern, limit],
+        )
         .await
     }
 
     /// All tag rows for the given bookmark ids (used to decorate a list page).
-    pub async fn tags_for_bookmarks(&self, ids: &[i64]) -> sqlx::Result<Vec<BookmarkTag>> {
+    pub async fn tags_for_bookmarks(&self, ids: &[i64]) -> DbResult<Vec<BookmarkTag>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut builder = QueryBuilder::<Sqlite>::new(
-            "SELECT bookmark_id, tag, origin FROM bookmark_tags WHERE bookmark_id IN (",
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT bookmark_id, tag, origin FROM bookmark_tags WHERE bookmark_id IN ({placeholders}) \
+             ORDER BY bookmark_id, tag"
         );
-        let mut separated = builder.separated(",");
-        for id in ids {
-            separated.push_bind(id);
-        }
-        separated.push_unseparated(") ORDER BY bookmark_id, tag");
-        builder
-            .build_query_as::<BookmarkTag>()
-            .fetch_all(self.pool())
-            .await
+        let params: Vec<Value> = ids.iter().map(|id| Value::from(*id)).collect();
+        self.query_all::<BookmarkTag>(&sql, params).await
     }
 
     /// `(tag, count)` pairs across the chat, for the tag index page.
-    pub async fn tag_counts(&self, chat_id: i64) -> sqlx::Result<Vec<(String, i64)>> {
-        sqlx::query_as::<_, (String, i64)>(
+    pub async fn tag_counts(&self, chat_id: i64) -> DbResult<Vec<(String, i64)>> {
+        self.query_all::<(String, i64)>(
             "SELECT t.tag, COUNT(*) AS n FROM bookmark_tags t \
              JOIN bookmarks b ON b.id = t.bookmark_id \
              WHERE b.chat_id = ? GROUP BY t.tag ORDER BY t.tag",
+            libsql::params![chat_id],
         )
-        .bind(chat_id)
-        .fetch_all(self.pool())
         .await
     }
 
-    pub async fn bookmarks_for_export(&self, chat_id: i64) -> sqlx::Result<Vec<Bookmark>> {
-        sqlx::query_as::<_, Bookmark>(safe(format!(
-            "SELECT {BOOKMARK_COLS} FROM bookmarks WHERE chat_id = ? ORDER BY id DESC"
-        )))
-        .bind(chat_id)
-        .fetch_all(self.pool())
+    pub async fn bookmarks_for_export(&self, chat_id: i64) -> DbResult<Vec<Bookmark>> {
+        self.query_all::<Bookmark>(
+            &format!("SELECT {BOOKMARK_COLS} FROM bookmarks WHERE chat_id = ? ORDER BY id DESC"),
+            libsql::params![chat_id],
+        )
         .await
     }
 
@@ -320,73 +294,67 @@ impl Repo {
         &self,
         now: i64,
         limit: i64,
-    ) -> sqlx::Result<Vec<Bookmark>> {
-        sqlx::query_as::<_, Bookmark>(safe(format!(
-            "SELECT {BOOKMARK_COLS} FROM bookmarks \
-             WHERE tag_state = 0 AND tag_next_attempt_at <= ? ORDER BY id LIMIT ?"
-        )))
-        .bind(now)
-        .bind(limit)
-        .fetch_all(self.pool())
+    ) -> DbResult<Vec<Bookmark>> {
+        self.query_all::<Bookmark>(
+            &format!(
+                "SELECT {BOOKMARK_COLS} FROM bookmarks \
+                 WHERE tag_state = 0 AND tag_next_attempt_at <= ? ORDER BY id LIMIT ?"
+            ),
+            libsql::params![now, limit],
+        )
         .await
     }
 
     /// Worker success: replace all tags with the AI suggestions and mark done.
-    pub async fn finish_bookmark_tagging(&self, id: i64, tags: &[String]) -> sqlx::Result<()> {
-        let mut tx = self.pool().begin().await?;
-        sqlx::query("DELETE FROM bookmark_tags WHERE bookmark_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+    pub async fn finish_bookmark_tagging(&self, id: i64, tags: &[String]) -> DbResult<()> {
+        let tx = self.conn().transaction().await?;
+        tx.execute(
+            "DELETE FROM bookmark_tags WHERE bookmark_id = ?",
+            libsql::params![id],
+        )
+        .await?;
         for tag in tags {
-            sqlx::query(
+            tx.execute(
                 "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag, origin) VALUES (?, ?, ?)",
+                libsql::params![id, tag.as_str(), ORIGIN_AI],
             )
-            .bind(id)
-            .bind(tag)
-            .bind(ORIGIN_AI)
-            .execute(&mut *tx)
             .await?;
         }
-        sqlx::query("UPDATE bookmarks SET tag_state = 1, updated_at = ? WHERE id = ?")
-            .bind(now_unix())
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        tx.execute(
+            "UPDATE bookmarks SET tag_state = 1, updated_at = ? WHERE id = ?",
+            libsql::params![now_unix(), id],
+        )
+        .await?;
         tx.commit().await
     }
 
     /// Fills in a title fetched from page metadata (worker path).
-    pub async fn set_bookmark_title(&self, id: i64, title: &str) -> sqlx::Result<()> {
-        sqlx::query("UPDATE bookmarks SET title = ?, updated_at = ? WHERE id = ?")
-            .bind(title)
-            .bind(now_unix())
-            .bind(id)
-            .execute(self.pool())
-            .await?;
+    pub async fn set_bookmark_title(&self, id: i64, title: &str) -> DbResult<()> {
+        self.exec(
+            "UPDATE bookmarks SET title = ?, updated_at = ? WHERE id = ?",
+            libsql::params![title, now_unix(), id],
+        )
+        .await?;
         Ok(())
     }
 
     /// Clears the notify message id (worker found the message `Gone`).
-    pub async fn clear_bookmark_notify(&self, id: i64) -> sqlx::Result<()> {
-        sqlx::query("UPDATE bookmarks SET notify_message_id = NULL, updated_at = ? WHERE id = ?")
-            .bind(now_unix())
-            .bind(id)
-            .execute(self.pool())
-            .await?;
+    pub async fn clear_bookmark_notify(&self, id: i64) -> DbResult<()> {
+        self.exec(
+            "UPDATE bookmarks SET notify_message_id = NULL, updated_at = ? WHERE id = ?",
+            libsql::params![now_unix(), id],
+        )
+        .await?;
         Ok(())
     }
 
     /// Bumps the retry counter and reschedules a transient failure.
-    pub async fn bump_bookmark_attempt(&self, id: i64, next_attempt_at: i64) -> sqlx::Result<()> {
-        sqlx::query(
+    pub async fn bump_bookmark_attempt(&self, id: i64, next_attempt_at: i64) -> DbResult<()> {
+        self.exec(
             "UPDATE bookmarks SET tag_attempts = tag_attempts + 1, tag_next_attempt_at = ?, \
              updated_at = ? WHERE id = ?",
+            libsql::params![next_attempt_at, now_unix(), id],
         )
-        .bind(next_attempt_at)
-        .bind(now_unix())
-        .bind(id)
-        .execute(self.pool())
         .await?;
         Ok(())
     }
@@ -399,32 +367,28 @@ impl Repo {
         chat_id: i64,
         id: i64,
         tags: &[&str],
-    ) -> sqlx::Result<bool> {
-        let mut tx = self.pool().begin().await?;
-        let res = sqlx::query(
-            "UPDATE bookmarks SET tag_state = 1, updated_at = ? WHERE id = ? AND chat_id = ?",
-        )
-        .bind(now_unix())
-        .bind(id)
-        .bind(chat_id)
-        .execute(&mut *tx)
-        .await?;
-        if res.rows_affected() == 0 {
+    ) -> DbResult<bool> {
+        let tx = self.conn().transaction().await?;
+        let affected = tx
+            .execute(
+                "UPDATE bookmarks SET tag_state = 1, updated_at = ? WHERE id = ? AND chat_id = ?",
+                libsql::params![now_unix(), id, chat_id],
+            )
+            .await?;
+        if affected == 0 {
             tx.rollback().await?;
             return Ok(false);
         }
-        sqlx::query("DELETE FROM bookmark_tags WHERE bookmark_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        tx.execute(
+            "DELETE FROM bookmark_tags WHERE bookmark_id = ?",
+            libsql::params![id],
+        )
+        .await?;
         for tag in tags {
-            sqlx::query(
+            tx.execute(
                 "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag, origin) VALUES (?, ?, ?)",
+                libsql::params![id, *tag, ORIGIN_MANUAL],
             )
-            .bind(id)
-            .bind(*tag)
-            .bind(ORIGIN_MANUAL)
-            .execute(&mut *tx)
             .await?;
         }
         tx.commit().await?;
@@ -438,41 +402,39 @@ impl Repo {
         chat_id: i64,
         id: i64,
         tag: &str,
-    ) -> sqlx::Result<Option<bool>> {
-        let mut tx = self.pool().begin().await?;
-        let res = sqlx::query(
-            "UPDATE bookmarks SET tag_state = 1, updated_at = ? WHERE id = ? AND chat_id = ?",
-        )
-        .bind(now_unix())
-        .bind(id)
-        .bind(chat_id)
-        .execute(&mut *tx)
-        .await?;
-        if res.rows_affected() == 0 {
+    ) -> DbResult<Option<bool>> {
+        let tx = self.conn().transaction().await?;
+        let affected = tx
+            .execute(
+                "UPDATE bookmarks SET tag_state = 1, updated_at = ? WHERE id = ? AND chat_id = ?",
+                libsql::params![now_unix(), id, chat_id],
+            )
+            .await?;
+        if affected == 0 {
             tx.rollback().await?;
             return Ok(None);
         }
-        let existing: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM bookmark_tags WHERE bookmark_id = ? AND tag = ?")
-                .bind(id)
-                .bind(tag)
-                .fetch_optional(&mut *tx)
+        let exists = {
+            let mut rows = tx
+                .query(
+                    "SELECT 1 FROM bookmark_tags WHERE bookmark_id = ? AND tag = ?",
+                    libsql::params![id, tag],
+                )
                 .await?;
-        let now_present = if existing.is_some() {
-            sqlx::query("DELETE FROM bookmark_tags WHERE bookmark_id = ? AND tag = ?")
-                .bind(id)
-                .bind(tag)
-                .execute(&mut *tx)
-                .await?;
+            rows.next().await?.is_some()
+        };
+        let now_present = if exists {
+            tx.execute(
+                "DELETE FROM bookmark_tags WHERE bookmark_id = ? AND tag = ?",
+                libsql::params![id, tag],
+            )
+            .await?;
             false
         } else {
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO bookmark_tags (bookmark_id, tag, origin) VALUES (?, ?, ?)",
+                libsql::params![id, tag, ORIGIN_MANUAL],
             )
-            .bind(id)
-            .bind(tag)
-            .bind(ORIGIN_MANUAL)
-            .execute(&mut *tx)
             .await?;
             true
         };
@@ -485,36 +447,35 @@ impl Repo {
         chat_id: i64,
         id: i64,
         note: &str,
-    ) -> sqlx::Result<bool> {
-        let res = sqlx::query(
-            "UPDATE bookmarks SET note = ?, updated_at = ? WHERE id = ? AND chat_id = ?",
-        )
-        .bind(note)
-        .bind(now_unix())
-        .bind(id)
-        .bind(chat_id)
-        .execute(self.pool())
-        .await?;
-        Ok(res.rows_affected() > 0)
+    ) -> DbResult<bool> {
+        let affected = self
+            .exec(
+                "UPDATE bookmarks SET note = ?, updated_at = ? WHERE id = ? AND chat_id = ?",
+                libsql::params![note, now_unix(), id, chat_id],
+            )
+            .await?;
+        Ok(affected > 0)
     }
 
     /// Deletes a bookmark and its tag rows in one transaction (no FK cascade;
     /// see migration 0004). Scoped by `chat_id`.
-    pub async fn delete_bookmark(&self, chat_id: i64, id: i64) -> sqlx::Result<bool> {
-        let mut tx = self.pool().begin().await?;
-        let res = sqlx::query("DELETE FROM bookmarks WHERE chat_id = ? AND id = ?")
-            .bind(chat_id)
-            .bind(id)
-            .execute(&mut *tx)
+    pub async fn delete_bookmark(&self, chat_id: i64, id: i64) -> DbResult<bool> {
+        let tx = self.conn().transaction().await?;
+        let affected = tx
+            .execute(
+                "DELETE FROM bookmarks WHERE chat_id = ? AND id = ?",
+                libsql::params![chat_id, id],
+            )
             .await?;
-        if res.rows_affected() == 0 {
+        if affected == 0 {
             tx.rollback().await?;
             return Ok(false);
         }
-        sqlx::query("DELETE FROM bookmark_tags WHERE bookmark_id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        tx.execute(
+            "DELETE FROM bookmark_tags WHERE bookmark_id = ?",
+            libsql::params![id],
+        )
+        .await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -528,10 +489,10 @@ mod tests {
     async fn test_repo() -> Repo {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("data.db");
-        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
         // Leak the tempdir so the file outlives the test body.
         std::mem::forget(dir);
-        Repo::new(pool)
+        Repo::new(db)
     }
 
     fn sample(chat_id: i64, url: &str, title: &str) -> NewBookmark<'static> {

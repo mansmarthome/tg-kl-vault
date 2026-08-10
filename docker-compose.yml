@@ -7,6 +7,11 @@ services:
     environment:
       FLOWERSS_BOT_TOKEN: ${FLOWERSS_BOT_TOKEN:?set FLOWERSS_BOT_TOKEN}
       FLOWERSS_SQLITE_PATH: ${FLOWERSS_SQLITE_PATH:-/app/data/data.db}
+      # Optional: set both to run as a Turso embedded replica (writes go to the
+      # remote primary, reads served locally, background sync). Leave unset for
+      # a plain local sqlite file at FLOWERSS_SQLITE_PATH.
+      TURSO_DATABASE_URL: ${TURSO_DATABASE_URL:-}
+      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:-}
       FLOWERSS_LOG_LEVEL: ${FLOWERSS_LOG_LEVEL:-info}
       FLOWERSS_UPDATE_INTERVAL: ${FLOWERSS_UPDATE_INTERVAL:-10}
       FLOWERSS_FETCH_CONCURRENCY: ${FLOWERSS_FETCH_CONCURRENCY:-8}

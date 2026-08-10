@@ -245,11 +245,12 @@ mod tests {
     }
 
     async fn reset_due(repo: &Repo, id: i64) {
-        sqlx::query("UPDATE bookmarks SET tag_next_attempt_at = 0 WHERE id = ?")
-            .bind(id)
-            .execute(repo.pool())
-            .await
-            .unwrap();
+        repo.exec(
+            "UPDATE bookmarks SET tag_next_attempt_at = 0 WHERE id = ?",
+            libsql::params![id],
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
