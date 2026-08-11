@@ -16,9 +16,9 @@ pub struct Category {
 
 /// ~20 categories, `other` last. APPEND ONLY — see module docs.
 pub const TAGS: &[Category] = &[
-    Category { slug: "tech", keywords: &["tech", "software", "hardware", "gadget", "computer", "cloud", "database", "api", "linux", "devops", "kubernetes"] },
+    Category { slug: "tech", keywords: &["tech", "software", "hardware", "gadget", "computer", "cloud", "database", "api", "linux", "devops", "kubernetes", "gpu", "cuda"] },
     Category { slug: "ai", keywords: &["ai", "artificial intelligence", "machine learning", "deep learning", "neural", "llm", "gpt", "chatbot", "transformer", "diffusion"] },
-    Category { slug: "programming", keywords: &["programming", "rust", "python", "javascript", "typescript", "golang", "compiler", "async", "framework", "refactor", "code review"] },
+    Category { slug: "programming", keywords: &["programming", "rust", "python", "javascript", "typescript", "golang", "compiler", "async", "framework", "refactor", "code review", "simd"] },
     Category { slug: "science", keywords: &["science", "physics", "chemistry", "biology", "space", "astronomy", "research", "quantum", "climate"] },
     Category { slug: "business", keywords: &["business", "management", "strategy", "marketing", "enterprise", "b2b", "saas"] },
     Category { slug: "finance", keywords: &["finance", "investing", "stock", "market", "crypto", "bitcoin", "economy", "bank", "trading"] },
