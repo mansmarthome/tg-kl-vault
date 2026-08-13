@@ -16,6 +16,10 @@ services:
       FLOWERSS_UPDATE_INTERVAL: ${FLOWERSS_UPDATE_INTERVAL:-10}
       FLOWERSS_FETCH_CONCURRENCY: ${FLOWERSS_FETCH_CONCURRENCY:-8}
       FLOWERSS_FETCH_RETENTION_DAYS: ${FLOWERSS_FETCH_RETENTION_DAYS:-90}
+      # Never push an item published longer ago than this, whatever the dedup
+      # ledger thinks. Guards against a feed republishing its whole archive
+      # after a GUID change. 0 disables.
+      FLOWERSS_FETCH_MAX_ITEM_AGE_DAYS: ${FLOWERSS_FETCH_MAX_ITEM_AGE_DAYS:-30}
       FLOWERSS_MESSAGE_MODE: ${FLOWERSS_MESSAGE_MODE:-html}
       FLOWERSS_DISABLE_WEB_PAGE_PREVIEW: ${FLOWERSS_DISABLE_WEB_PAGE_PREVIEW:-false}
       FLOWERSS_PREVIEW_TEXT: ${FLOWERSS_PREVIEW_TEXT:-0}

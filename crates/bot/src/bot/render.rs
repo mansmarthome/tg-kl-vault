@@ -87,27 +87,39 @@ pub struct FeedSettingData<'a> {
     pub enable_notification: Option<i64>,
     pub enable_telegraph: Option<i64>,
     pub tag: &'a str,
+    // Health (migration 0005). `now` is passed in rather than read from the
+    // clock so the rendering stays a pure function and testable.
+    pub last_success_at: Option<i64>,
+    pub last_error: Option<&'a str>,
+    pub last_error_at: Option<i64>,
+    pub now: i64,
 }
 
-/// Renders the Go `feedSettingTmpl` (`internal/bot/handler/set.go`). Sent as
-/// HTML, so the feed-derived title/link/tag are escaped (deliberate deviation
-/// from Go — see `render_html`); the static labels stay byte-for-byte.
+/// Renders the Go `feedSettingTmpl` (`internal/bot/handler/set.go`) — same
+/// field order and layout, but the labels are zh-TW rather than Go's zh-CN, and
+/// the feed-derived title/link/tag are HTML-escaped (deliberate deviation from
+/// Go — see `render_html`). Only display text diverges; nothing here is wire
+/// format.
+///
+/// `[最後成功]`/`[最後錯誤]` are appended *after* the Go template's last field,
+/// so the field order still matches. `[抓取更新]` only ever said paused-or-not;
+/// these say why and since when.
 pub fn render_feed_setting(data: &FeedSettingData<'_>) -> String {
-    let status = if data.source_error_count >= data.error_threshold { "暂停" } else { "抓取中" };
+    let status = if data.source_error_count >= data.error_threshold { "暫停" } else { "抓取中" };
     let notice = match data.enable_notification {
-        Some(0) => "关闭",
-        Some(1) => "开启",
+        Some(0) => "關閉",
+        Some(1) => "開啟",
         _ => "",
     };
     let telegraph = match data.enable_telegraph {
-        Some(0) => "关闭",
-        Some(1) => "开启",
+        Some(0) => "關閉",
+        Some(1) => "開啟",
         _ => "",
     };
-    let tag = if data.tag.is_empty() { "无".to_owned() } else { escape(data.tag) };
+    let tag = if data.tag.is_empty() { "無".to_owned() } else { escape(data.tag) };
 
-    format!(
-        "\n订阅<b>设置</b>\n[id] {}\n[标题] {}\n[Link] {}\n[抓取更新] {}\n[抓取频率] {}分钟\n[通知] {}\n[Telegraph] {}\n[Tag] {}\n",
+    let mut out = format!(
+        "\n訂閱<b>設定</b>\n[id] {}\n[標題] {}\n[Link] {}\n[抓取更新] {}\n[抓取頻率] {}分鐘\n[通知] {}\n[Telegraph] {}\n[Tag] {}\n",
         data.source_id,
         escape(data.source_title),
         escape(data.source_link),
@@ -116,7 +128,35 @@ pub fn render_feed_setting(data: &FeedSettingData<'_>) -> String {
         notice,
         telegraph,
         tag
-    )
+    );
+
+    out.push_str(&format!("[最後成功] {}\n", humanize_ago(data.last_success_at, data.now)));
+    if let Some(error) = data.last_error.filter(|e| !e.is_empty()) {
+        out.push_str(&format!(
+            "[最後錯誤] {}（{}）\n",
+            escape(error),
+            humanize_ago(data.last_error_at, data.now)
+        ));
+    }
+    out
+}
+
+/// Renders a unix timestamp as a coarse "how long ago", which is all anyone
+/// needs when triaging a feed. `None` means it never happened.
+pub fn humanize_ago(at: Option<i64>, now: i64) -> String {
+    let Some(at) = at else {
+        return "從未".to_owned();
+    };
+    let secs = now.saturating_sub(at);
+    if secs < 0 {
+        return "剛剛".to_owned();
+    }
+    match secs {
+        s if s < 60 => "剛剛".to_owned(),
+        s if s < 3600 => format!("{}分鐘前", s / 60),
+        s if s < 86_400 => format!("{}小時前", s / 3600),
+        s => format!("{}天前", s / 86_400),
+    }
 }
 
 fn push_preview(out: &mut String, preview_text: &str) {
@@ -136,8 +176,8 @@ mod tests {
 
     fn fixture<'a>(preview_text: &'a str, enable_telegraph: bool) -> MessageData<'a> {
         MessageData {
-            source_title: "源标题",
-            content_title: "文章标题",
+            source_title: "源標題",
+            content_title: "文章標題",
             raw_link: "https://example.com/post",
             preview_text,
             telegraph_url: "https://telegra.ph/post",
@@ -150,15 +190,15 @@ mod tests {
     fn renders_html_template_without_preview_or_telegraph() {
         assert_eq!(
             render_html(&fixture("", false)),
-            "<b>源标题</b>\n<a href=\"https://example.com/post\">文章标题</a>\n#tag1 #tag2\n"
+            "<b>源標題</b>\n<a href=\"https://example.com/post\">文章標題</a>\n#tag1 #tag2\n"
         );
     }
 
     #[test]
     fn renders_html_template_with_preview_and_telegraph() {
         assert_eq!(
-            render_html(&fixture("预览文字", true)),
-            "<b>源标题</b>\n---------- Preview ----------\n预览文字\n-----------------------------\n文章标题 <a href=\"https://telegra.ph/post\">Telegraph</a> | <a href=\"https://example.com/post\">原文</a>\n#tag1 #tag2\n"
+            render_html(&fixture("預覽文字", true)),
+            "<b>源標題</b>\n---------- Preview ----------\n預覽文字\n-----------------------------\n文章標題 <a href=\"https://telegra.ph/post\">Telegraph</a> | <a href=\"https://example.com/post\">原文</a>\n#tag1 #tag2\n"
         );
     }
 
@@ -166,15 +206,15 @@ mod tests {
     fn renders_markdown_template_without_preview_or_telegraph() {
         assert_eq!(
             render_markdown(&fixture("", false)),
-            "** 源标题 **\n[文章标题](https://example.com/post)\n#tag1 #tag2\n"
+            "** 源標題 **\n[文章標題](https://example.com/post)\n#tag1 #tag2\n"
         );
     }
 
     #[test]
     fn renders_markdown_template_with_preview_and_telegraph() {
         assert_eq!(
-            render_markdown(&fixture("预览文字", true)),
-            "** 源标题 **\n---------- Preview ----------\n预览文字\n-----------------------------\n文章标题 [Telegraph](https://telegra.ph/post) | [原文](https://example.com/post)\n#tag1 #tag2\n"
+            render_markdown(&fixture("預覽文字", true)),
+            "** 源標題 **\n---------- Preview ----------\n預覽文字\n-----------------------------\n文章標題 [Telegraph](https://telegra.ph/post) | [原文](https://example.com/post)\n#tag1 #tag2\n"
         );
     }
 
@@ -215,20 +255,25 @@ mod tests {
             enable_notification: Some(1),
             enable_telegraph: Some(0),
             tag: "#x&y",
+            last_success_at: None,
+            last_error: Some("boom & <crash>"),
+            last_error_at: None,
+            now: 1_700_000_000,
         };
         let out = render_feed_setting(&data);
-        assert!(out.contains("[标题] A &amp; B &lt;feed&gt;"));
+        assert!(out.contains("[最後錯誤] boom &amp; &lt;crash&gt;"));
+        assert!(out.contains("[標題] A &amp; B &lt;feed&gt;"));
         assert!(out.contains("[Link] https://x.test/f?a=1&amp;b=2"));
         assert!(out.contains("[Tag] #x&amp;y"));
         // Our own <b> label is preserved.
-        assert!(out.contains("订阅<b>设置</b>"));
+        assert!(out.contains("訂閱<b>設定</b>"));
     }
 
     #[test]
     fn renders_feed_setting_template_like_go() {
         let data = FeedSettingData {
             source_id: 7,
-            source_title: "标题",
+            source_title: "標題",
             source_link: "https://example.com/feed",
             source_error_count: 0,
             error_threshold: 100,
@@ -236,16 +281,46 @@ mod tests {
             enable_notification: Some(1),
             enable_telegraph: Some(0),
             tag: "",
+            last_success_at: None,
+            last_error: None,
+            last_error_at: None,
+            now: 1_700_000_000,
         };
         assert_eq!(
             render_feed_setting(&data),
-            "\n订阅<b>设置</b>\n[id] 7\n[标题] 标题\n[Link] https://example.com/feed\n[抓取更新] 抓取中\n[抓取频率] 10分钟\n[通知] 开启\n[Telegraph] 关闭\n[Tag] 无\n"
+            "\n訂閱<b>設定</b>\n[id] 7\n[標題] 標題\n[Link] https://example.com/feed\n[抓取更新] 抓取中\n[抓取頻率] 10分鐘\n[通知] 開啟\n[Telegraph] 關閉\n[Tag] 無\n[最後成功] 從未\n"
         );
 
         let paused = FeedSettingData { source_error_count: 101, tag: "#tag", ..data };
         assert_eq!(
             render_feed_setting(&paused),
-            "\n订阅<b>设置</b>\n[id] 7\n[标题] 标题\n[Link] https://example.com/feed\n[抓取更新] 暂停\n[抓取频率] 10分钟\n[通知] 开启\n[Telegraph] 关闭\n[Tag] #tag\n"
+            "\n訂閱<b>設定</b>\n[id] 7\n[標題] 標題\n[Link] https://example.com/feed\n[抓取更新] 暫停\n[抓取頻率] 10分鐘\n[通知] 開啟\n[Telegraph] 關閉\n[Tag] #tag\n[最後成功] 從未\n"
         );
+
+        // Health lines are strictly appended: the Go template's own output is
+        // still an exact prefix of ours.
+        let healthy = FeedSettingData {
+            last_success_at: Some(1_700_000_000 - 7200),
+            last_error: Some("HTTP 404"),
+            last_error_at: Some(1_700_000_000 - 3 * 86_400),
+            ..data
+        };
+        assert_eq!(
+            render_feed_setting(&healthy),
+            "\n訂閱<b>設定</b>\n[id] 7\n[標題] 標題\n[Link] https://example.com/feed\n[抓取更新] 抓取中\n[抓取頻率] 10分鐘\n[通知] 開啟\n[Telegraph] 關閉\n[Tag] 無\n[最後成功] 2小時前\n[最後錯誤] HTTP 404（3天前）\n"
+        );
+    }
+
+    #[test]
+    fn humanize_ago_buckets_by_magnitude() {
+        let now = 1_700_000_000;
+        assert_eq!(humanize_ago(None, now), "從未");
+        assert_eq!(humanize_ago(Some(now), now), "剛剛");
+        assert_eq!(humanize_ago(Some(now - 59), now), "剛剛");
+        assert_eq!(humanize_ago(Some(now - 60), now), "1分鐘前");
+        assert_eq!(humanize_ago(Some(now - 7200), now), "2小時前");
+        assert_eq!(humanize_ago(Some(now - 3 * 86_400), now), "3天前");
+        // Clock skew must not underflow into a giant number.
+        assert_eq!(humanize_ago(Some(now + 500), now), "剛剛");
     }
 }

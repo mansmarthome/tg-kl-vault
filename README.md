@@ -19,26 +19,31 @@ This repository is a Rust rewrite derived from the original [`indes/flowerss-bot
 ## Supported commands
 
 ```text
-/start                    开始使用
-/sub [url]                订阅RSS源
-/unsub [source_id]         退订RSS源
-/list                     已订阅的RSS源
-/set                      设置订阅
+/start                    開始使用
+/sub [url]                訂閱RSS源
+/unsub [source_id]         退訂RSS源
+/list                     已訂閱的RSS源
+/set                      設定訂閱
 /settings                 設定（多層按鈕：OPML、更新頻率、語系、書籤）
-/check                    检查当前订阅
+/check                    立刻抓取所有訂閱並推播新文章
+/feedcheck                檢查訂閱的 feed 是否還有效（只探測，不推播）
 /bm [url]                 收藏網址（回覆含連結的訊息亦可）
 /bookmarks                瀏覽書籤（分頁）
 /bmsearch [keyword]       搜尋書籤
-/setfeedtag [id] [tags]    设置rss订阅标签
-/unsuball                 取消所有订阅
-/activeall                开启抓取订阅更新
-/pauseall                 停止抓取所有订阅更新
+/setfeedtag [id] [tags]    設定rss訂閱標籤
+/unsuball                 取消所有訂閱
+/activeall                開啟抓取訂閱更新
+/pauseall                 停止抓取所有訂閱更新
 /ping                     health check
-/help                     帮助
-/version                  Bot 版本信息
+/help                     幫助
+/version                  Bot 版本資訊
 ```
 
-`/check` immediately fetches the current chat's subscribed sources, sends newly detected items, and finishes with a summary such as `检查完成：新增0篇，67个源无更新，0个源失败`.
+`/check` immediately fetches the current chat's subscribed sources, sends newly detected items, and finishes with a summary such as `檢查完成：新增0篇，忽略0篇過舊，67個源無更新，0個源失敗`.
+
+`/feedcheck` is the diagnostic counterpart: it probes every subscribed feed concurrently and reports which ones are dead (HTTP error, unreachable, no longer valid RSS/Atom, empty, or abandoned), alongside the failure history the scheduler recorded. It never writes to `contents`, never sends an article, and never changes a source's paused/error state.
+
+Items whose publish date is older than `[fetch] max_item_age_days` (default 30) are recorded in the dedup ledger but never pushed. Without that gate, a feed that changes its GUIDs — or whose ledger rows aged out via `retention_days` — republishes its entire back catalogue. Items with no date are unjudgeable and still go out; set `0` to disable the gate.
 
 ## Current implementation notes
 

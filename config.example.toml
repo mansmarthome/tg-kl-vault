@@ -29,6 +29,13 @@ level = "info"
 concurrency = 8
 retention_days = 90
 
+# Never push an item whose publish date is older than this, no matter what the
+# dedup ledger says. Without it a feed that changes its GUIDs (platform
+# migration, http->https, trailing-slash change) republishes its entire archive,
+# and so do items whose ledger rows aged out via retention_days above. Items
+# with no date at all are always sent — they cannot be judged. Set 0 to disable.
+max_item_age_days = 30
+
 # Bookmark AI auto-tagging.
 # provider = "auto" uses Gemini when api_key is set, else the local keyword
 # heuristic. Set it to "gemini" or "heuristic" to force one. The heuristic

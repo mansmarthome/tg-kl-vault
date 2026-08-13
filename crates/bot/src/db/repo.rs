@@ -19,6 +19,22 @@ pub struct SubscriptionSource {
     pub wait_time: Option<i64>,
     pub link: Option<String>,
     pub title: Option<String>,
+    // Source health, joined in so `/list` and `/feedcheck` need one query
+    // instead of an N+1 `get_source` loop.
+    pub error_count: Option<i64>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+}
+
+impl SubscriptionSource {
+    /// Mirrors `sources_due`'s pause/give-up gate: the scheduler skips these
+    /// entirely, which is exactly the state a user needs surfaced.
+    pub fn is_paused(&self) -> bool {
+        self.error_count.unwrap_or(0) >= i64::from(ERROR_THRESHOLD)
+    }
 }
 
 impl FromRow for SubscriptionSource {
@@ -34,6 +50,12 @@ impl FromRow for SubscriptionSource {
             wait_time: row.get(7)?,
             link: row.get(8)?,
             title: row.get(9)?,
+            error_count: row.get(10)?,
+            etag: row.get(11)?,
+            last_modified: row.get(12)?,
+            last_error: row.get(13)?,
+            last_error_at: row.get(14)?,
+            last_success_at: row.get(15)?,
         })
     }
 }
@@ -164,7 +186,8 @@ impl Repo {
 
     pub async fn list_sources(&self) -> DbResult<Vec<Source>> {
         self.query_all::<Source>(
-            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
+            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at, \
+                    last_error, last_error_at, last_success_at \
              FROM sources ORDER BY id",
             (),
         )
@@ -173,7 +196,8 @@ impl Repo {
 
     pub async fn get_source(&self, id: i64) -> DbResult<Option<Source>> {
         self.query_opt::<Source>(
-            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
+            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at, \
+                    last_error, last_error_at, last_success_at \
              FROM sources WHERE id = ?",
             libsql::params![id],
         )
@@ -182,7 +206,8 @@ impl Repo {
 
     pub async fn source_by_link(&self, link: &str) -> DbResult<Option<Source>> {
         self.query_opt::<Source>(
-            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
+            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at, \
+                    last_error, last_error_at, last_success_at \
              FROM sources WHERE link = ? LIMIT 1",
             libsql::params![link],
         )
@@ -201,7 +226,8 @@ impl Repo {
 
     pub async fn sources_due(&self, now: i64, limit: i64) -> DbResult<Vec<Source>> {
         self.query_all::<Source>(
-            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at \
+            "SELECT id, link, title, error_count, created_at, updated_at, etag, last_modified, next_fetch_at, \
+                    last_error, last_error_at, last_success_at \
              FROM sources \
              WHERE COALESCE(next_fetch_at, 0) <= ? AND COALESCE(error_count, 0) < 100 \
              ORDER BY COALESCE(next_fetch_at, 0), id LIMIT ?",
@@ -311,7 +337,9 @@ impl Repo {
         self.query_all::<SubscriptionSource>(
             "SELECT subscribes.id AS subscribe_id, subscribes.user_id, subscribes.source_id, \
                     subscribes.enable_notification, subscribes.enable_telegraph, subscribes.tag, \
-                    subscribes.interval, subscribes.wait_time, sources.link, sources.title \
+                    subscribes.interval, subscribes.wait_time, sources.link, sources.title, \
+                    sources.error_count, sources.etag, sources.last_modified, \
+                    sources.last_error, sources.last_error_at, sources.last_success_at \
              FROM subscribes JOIN sources ON sources.id = subscribes.source_id \
              WHERE subscribes.user_id = ? ORDER BY sources.id",
             libsql::params![user_id],
@@ -548,12 +576,22 @@ impl Repo {
         Ok(())
     }
 
-    pub async fn mark_source_error(&self, source_id: i64, next_fetch_at: i64) -> DbResult<()> {
+    /// Records a failed fetch/parse. `error` is kept (truncated) so `/feedcheck`
+    /// can tell the user *why* a feed stopped working — before migration 0005
+    /// the message only ever reached the server log.
+    pub async fn mark_source_error(
+        &self,
+        source_id: i64,
+        next_fetch_at: i64,
+        error: &str,
+    ) -> DbResult<()> {
         self.exec(
             "UPDATE sources \
-             SET error_count = COALESCE(error_count, 0) + 1, next_fetch_at = ?, updated_at = CURRENT_TIMESTAMP \
+             SET error_count = COALESCE(error_count, 0) + 1, next_fetch_at = ?, \
+                 last_error = ?, last_error_at = CAST(strftime('%s', 'now') AS INTEGER), \
+                 updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?",
-            libsql::params![next_fetch_at, source_id],
+            libsql::params![next_fetch_at, truncate_error(error), source_id],
         )
         .await?;
         Ok(())
@@ -569,7 +607,9 @@ impl Repo {
         self.exec(
             "UPDATE sources \
              SET error_count = 0, etag = COALESCE(?, etag), last_modified = COALESCE(?, last_modified), \
-                 next_fetch_at = ?, updated_at = CURRENT_TIMESTAMP \
+                 next_fetch_at = ?, last_error = NULL, last_error_at = NULL, \
+                 last_success_at = CAST(strftime('%s', 'now') AS INTEGER), \
+                 updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?",
             libsql::params![etag, last_modified, next_fetch_at, source_id],
         )
@@ -594,6 +634,17 @@ impl Repo {
             libsql::params![source_id, modifier, source_id, i64::from(keep_recent)],
         )
         .await
+    }
+}
+
+/// Feed errors can carry a whole response body; cap what lands in `last_error`
+/// so one bad source cannot bloat every `SELECT` on `sources`.
+fn truncate_error(error: &str) -> String {
+    const MAX: usize = 300;
+    let error = error.trim();
+    match error.char_indices().nth(MAX) {
+        Some((idx, _)) => format!("{}…", &error[..idx]),
+        None => error.to_owned(),
     }
 }
 
@@ -716,6 +767,72 @@ mod tests {
         let source = repo.get_source(source_id).await.unwrap().unwrap();
         assert_eq!(source.next_fetch_at, 0);
         assert_eq!(source.error_count, Some(0));
+    }
+
+    /// The error text used to exist only in the server log, so a user could
+    /// never find out *why* a feed went quiet. A later success must clear it,
+    /// otherwise `/feedcheck` would keep reporting a resolved failure.
+    #[tokio::test]
+    async fn source_error_is_recorded_and_cleared_by_the_next_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
+
+        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+
+        repo.mark_source_error(source_id, 123, "HTTP status client error (404 Not Found)")
+            .await
+            .unwrap();
+        let source = repo.get_source(source_id).await.unwrap().unwrap();
+        assert_eq!(source.error_count, Some(1));
+        assert_eq!(
+            source.last_error.as_deref(),
+            Some("HTTP status client error (404 Not Found)")
+        );
+        assert!(source.last_error_at.unwrap_or(0) > 0);
+        assert_eq!(source.last_success_at, None);
+
+        repo.mark_source_success(source_id, Some("etag-1"), None, 456).await.unwrap();
+        let source = repo.get_source(source_id).await.unwrap().unwrap();
+        assert_eq!(source.error_count, Some(0));
+        assert_eq!(source.last_error, None);
+        assert_eq!(source.last_error_at, None);
+        assert!(source.last_success_at.unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn long_errors_are_truncated_on_a_char_boundary() {
+        // A multi-byte error longer than the cap must not panic on slicing.
+        let long = "錯".repeat(500);
+        let truncated = truncate_error(&long);
+        assert_eq!(truncated.chars().count(), 301, "300 chars plus the ellipsis");
+        assert!(truncated.ends_with('…'));
+        assert_eq!(truncate_error("  short  "), "short");
+    }
+
+    /// `/list` and `/feedcheck` read health off the subscription join rather
+    /// than issuing an N+1 `get_source` per row.
+    #[tokio::test]
+    async fn subscriptions_for_user_carries_source_health() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
+
+        let source_id = repo.insert_source("https://example.com/feed", "Example").await.unwrap();
+        repo.subscribe_user(42, source_id).await.unwrap();
+        repo.mark_source_error(source_id, 123, "boom").await.unwrap();
+
+        let subs = repo.subscriptions_for_user(42).await.unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].error_count, Some(1));
+        assert_eq!(subs[0].last_error.as_deref(), Some("boom"));
+        assert!(!subs[0].is_paused());
+
+        repo.disable_source_update(source_id).await.unwrap();
+        let subs = repo.subscriptions_for_user(42).await.unwrap();
+        assert!(subs[0].is_paused(), "a paused source is invisible to the scheduler");
     }
 
     #[tokio::test]

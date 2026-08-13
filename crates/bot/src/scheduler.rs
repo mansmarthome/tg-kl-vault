@@ -13,7 +13,11 @@ use crate::{
         models::{Content, Source, Subscribe},
         repo::Repo,
     },
-    feed::{fetch::{FetchOutcome, Fetcher}, hash::gen_hash_id, parse::{parse_feed, ParsedItem}},
+    feed::{
+        fetch::{FetchOutcome, Fetcher},
+        hash::gen_hash_id,
+        parse::{is_stale_item, parse_feed, ParsedItem},
+    },
     preview::{PublishRequest, PreviewPublisher},
 };
 
@@ -92,7 +96,25 @@ where
                     }
                 }
                 Ok(FetchOutcome::Modified(feed)) => {
-                    let parsed = parse_feed(&feed.body)?;
+                    // A single malformed feed used to `?` out of the whole
+                    // batch, starving every later due source and never even
+                    // recording the failure against this one.
+                    let parsed = match parse_feed(&feed.body) {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            warn!(source_id = source.id, error = %err, "parse source failed");
+                            if !self.options.dry_run {
+                                self.repo
+                                    .mark_source_error(
+                                        source.id,
+                                        backoff_fetch_at(now, source.error_count.unwrap_or(0)),
+                                        &format!("parse failed: {err}"),
+                                    )
+                                    .await?;
+                            }
+                            continue;
+                        }
+                    };
                     let hashes = parsed
                         .items
                         .iter()
@@ -110,6 +132,23 @@ where
 
                     for (item, hash_id) in parsed.items.iter().zip(hashes) {
                         if existing.contains(&hash_id) {
+                            continue;
+                        }
+                        // Record it as seen before skipping, so a stale item is
+                        // judged once and never re-evaluated — and so a ledger
+                        // hole (GUID churn, `prune_contents`) heals instead of
+                        // re-announcing the archive on every pass.
+                        if is_stale_item(item.published, now, self.config.fetch.max_item_age_days) {
+                            info!(
+                                source_id = source.id,
+                                hash_id = %hash_id,
+                                title = %item.title,
+                                published = ?item.published,
+                                "skipping stale item"
+                            );
+                            if !self.options.dry_run {
+                                self.repo.insert_content(&ledger_entry(source.id, item, &hash_id, None)).await?;
+                            }
                             continue;
                         }
                         info!(
@@ -140,16 +179,7 @@ where
                             });
 
                         self.repo
-                            .insert_content(&Content {
-                                source_id: Some(source.id),
-                                hash_id: hash_id.clone(),
-                                raw_id: Some(item.guid.clone()),
-                                raw_link: Some(item.link.clone()),
-                                title: Some(item.title.clone()),
-                                telegraph_url: telegraph_url.clone(),
-                                created_at: None,
-                                updated_at: None,
-                            })
+                            .insert_content(&ledger_entry(source.id, item, &hash_id, telegraph_url.clone()))
                             .await?;
 
                         self.broadcast_item(&source, item, &hash_id, telegraph_url.as_deref(), &subs).await?;
@@ -166,7 +196,13 @@ where
                 Err(err) => {
                     warn!(source_id = source.id, error = %err, "fetch source failed");
                     if !self.options.dry_run {
-                        self.repo.mark_source_error(source.id, backoff_fetch_at(now, source.error_count.unwrap_or(0))).await?;
+                        self.repo
+                            .mark_source_error(
+                                source.id,
+                                backoff_fetch_at(now, source.error_count.unwrap_or(0)),
+                                &err.to_string(),
+                            )
+                            .await?;
                     }
                 }
             }
@@ -246,6 +282,29 @@ where
     }
 }
 
+/// Builds the `contents` dedup-ledger row for a feed item. Shared with the
+/// manual `/check` pipeline, which duplicates this loop inline — both paths
+/// must write the ledger identically or one would re-announce what the other
+/// already sent. `telegraph_url` is `None` for items recorded without sending
+/// (the stale-item gate), which is also what a failed publish stores.
+pub(crate) fn ledger_entry(
+    source_id: i64,
+    item: &ParsedItem,
+    hash_id: &str,
+    telegraph_url: Option<String>,
+) -> Content {
+    Content {
+        source_id: Some(source_id),
+        hash_id: hash_id.to_owned(),
+        raw_id: Some(item.guid.clone()),
+        raw_link: Some(item.link.clone()),
+        title: Some(item.title.clone()),
+        telegraph_url,
+        created_at: None,
+        updated_at: None,
+    }
+}
+
 fn now_unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
 }
@@ -270,9 +329,9 @@ mod tests {
     use crate::{
         bot::sender::test_support::RecordingSender,
         db,
+        testutil::spawn_single_response_server,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
 
     /// Records `tracing` events whose `message` field equals "would send",
     /// standing in for the log-scraping step of the manual `--dry-run`
@@ -307,31 +366,6 @@ mod tests {
         }
         fn enter(&self, _span: &tracing::span::Id) {}
         fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
-    /// Serves one fixed-response HTTP request and then closes, avoiding a
-    /// new dev-dependency just to stand up a feed for the dry-run gate test.
-    async fn spawn_single_response_server(body: &'static str) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
-            loop {
-                let n = socket.read(&mut buf).await.unwrap();
-                if n == 0 || buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/rss+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            socket.write_all(response.as_bytes()).await.unwrap();
-            socket.shutdown().await.unwrap();
-        });
-        format!("http://{addr}/feed")
     }
 
     #[tokio::test]
@@ -427,6 +461,92 @@ mod tests {
         assert_eq!(would_send_count.load(Ordering::SeqCst), 1, "genuinely new article must be flagged");
     }
 
+    /// The age gate: an item the ledger has never seen but whose `<pubDate>`
+    /// predates the cutoff is recorded as seen and *not* sent. This is what
+    /// stops a feed that churned its GUIDs — or whose ledger rows aged out via
+    /// `prune_contents` — from republishing its whole archive. An item with no
+    /// date at all is unjudgeable and must still go out.
+    #[tokio::test]
+    async fn stale_items_are_recorded_but_never_sent() {
+        // Models the reported symptom: a ledger with no rows for this source
+        // (GUID churn, or `prune_contents` aged them out) plus a feed that
+        // serves its whole back catalogue.
+        const FEED_BODY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Archive Feed</title>
+<item><guid>old-1</guid><title>Post from 2013</title><link>https://example.com/old-1</link><description>d</description><pubDate>Fri, 01 Mar 2013 00:00:00 GMT</pubDate></item>
+<item><guid>old-2</guid><title>Post from 2016</title><link>https://example.com/old-2</link><description>d</description><pubDate>Tue, 01 Mar 2016 00:00:00 GMT</pubDate></item>
+<item><guid>old-3</guid><title>Post from 2020</title><link>https://example.com/old-3</link><description>d</description><pubDate>Sun, 01 Mar 2020 00:00:00 GMT</pubDate></item>
+<item><guid>undated-1</guid><title>Undated Post</title><link>https://example.com/undated-1</link><description>d</description></item>
+</channel></rss>"#;
+
+        let source_link = spawn_single_response_server(FEED_BODY).await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::connect(dir.path().join("data.db").to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+        let source_id = repo.insert_source(&source_link, "Archive Feed").await.unwrap();
+        repo.subscribe_user(1, source_id).await.unwrap();
+
+        let config = Config::default();
+        assert_eq!(config.fetch.max_item_age_days, 30, "test relies on the gate being on by default");
+        let fetcher = Fetcher::new(&config).unwrap();
+        let scheduler = Scheduler::new(
+            repo.clone(),
+            fetcher,
+            crate::preview::NoopPublisher,
+            RecordingSender::default(),
+            config,
+            SchedulerOptions::default(),
+        );
+
+        scheduler.run_once().await.unwrap();
+
+        {
+            let sent = scheduler.sender.sent.lock().unwrap();
+            assert_eq!(sent.len(), 1, "the back catalogue must not be pushed");
+            assert!(sent[0].text.contains("Undated Post"));
+        }
+
+        // Every item is in the ledger, stale ones included: they are silenced
+        // permanently rather than re-judged (and re-skipped) on every pass —
+        // which is also what heals the ledger hole that caused this.
+        let hashes: Vec<String> = ["old-1", "old-2", "old-3", "undated-1"]
+            .iter()
+            .map(|guid| gen_hash_id(&source_link, guid))
+            .collect();
+        let existing = repo.existing_hash_ids(source_id, &hashes).await.unwrap();
+        assert_eq!(existing.len(), 4, "stale items must still be recorded as seen");
+    }
+
+    /// A single malformed feed used to `?` out of `run_once`, starving every
+    /// later due source for that pass and never recording the failure.
+    #[tokio::test]
+    async fn parse_failure_is_recorded_as_a_source_error() {
+        let source_link = spawn_single_response_server("<html>not a feed at all</html>").await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::connect(dir.path().join("data.db").to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+        let source_id = repo.insert_source(&source_link, "Broken Feed").await.unwrap();
+
+        let config = Config::default();
+        let fetcher = Fetcher::new(&config).unwrap();
+        let scheduler = Scheduler::new(
+            repo.clone(),
+            fetcher,
+            crate::preview::NoopPublisher,
+            crate::bot::sender::NoopSender,
+            config,
+            SchedulerOptions::default(),
+        );
+
+        scheduler.run_once().await.unwrap();
+
+        let source = repo.get_source(source_id).await.unwrap().unwrap();
+        assert_eq!(source.error_count, Some(1), "parse failure must count against the source");
+        assert!(source.next_fetch_at > 0, "parse failure must schedule a backoff retry");
+    }
+
     #[test]
     fn next_fetch_at_uses_at_least_one_minute() {
         assert_eq!(next_fetch_at(100, 0), 160);
@@ -473,6 +593,7 @@ mod tests {
             title: "New Post".to_owned(),
             description: Some("<p>hello</p>".to_owned()),
             content: None,
+            published: None,
         };
 
         scheduler.broadcast_item(&source, &item, "hash1", None, &subs).await.unwrap();
@@ -520,6 +641,7 @@ mod tests {
             title: "New Post".to_owned(),
             description: Some("<p>hello</p>".to_owned()),
             content: None,
+            published: None,
         };
         scheduler.broadcast_item(&source, &item, "hash1", None, &subs).await.unwrap();
 

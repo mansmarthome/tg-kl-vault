@@ -46,8 +46,8 @@ macro_rules! strings {
 }
 
 strings! {
-    help => en: "Commands:\n/sub Subscribe to an RSS feed\n/unsub Unsubscribe\n/list Show subscriptions\n/set Feed settings\n/settings Bot settings\n/check Check current subscriptions\n/activeall Enable all subscriptions\n/pauseall Pause all subscriptions\n/unsuball Remove all subscriptions\n/bm Bookmark a URL\n/bookmarks Show bookmarks\n/bmsearch Search bookmarks\n/help Help\n/version Bot version",
-        zh: "命令：\n/sub 訂閱 RSS 源\n/unsub 取消訂閱\n/list 查看目前訂閱源\n/set 設定訂閱\n/settings Bot 設定\n/check 檢查目前訂閱\n/activeall 開啟所有訂閱\n/pauseall 暫停所有訂閱\n/unsuball 取消所有訂閱\n/bm 收藏網址\n/bookmarks 查看書籤\n/bmsearch 搜尋書籤\n/help 幫助\n/version Bot 版本資訊";
+    help => en: "Commands:\n/sub Subscribe to an RSS feed\n/unsub Unsubscribe\n/list Show subscriptions\n/set Feed settings\n/settings Bot settings\n/check Fetch all subscriptions now and push new articles\n/feedcheck Check whether the subscribed feeds still work\n/activeall Enable all subscriptions\n/pauseall Pause all subscriptions\n/unsuball Remove all subscriptions\n/bm Bookmark a URL\n/bookmarks Show bookmarks\n/bmsearch Search bookmarks\n/help Help\n/version Bot version",
+        zh: "命令：\n/sub 訂閱 RSS 源\n/unsub 取消訂閱\n/list 查看目前訂閱源\n/set 設定訂閱\n/settings Bot 設定\n/check 立刻抓取所有訂閱並推播新文章\n/feedcheck 檢查訂閱的 feed 是否還有效\n/activeall 開啟所有訂閱\n/pauseall 暫停所有訂閱\n/unsuball 取消所有訂閱\n/bm 收藏網址\n/bookmarks 查看書籤\n/bmsearch 搜尋書籤\n/help 幫助\n/version Bot 版本資訊";
     settings_title => en: "Settings", zh: "設定";
     settings_opml_button => en: "OPML import/export", zh: "OPML 匯入/匯出";
     settings_import_button => en: "Import", zh: "匯入";

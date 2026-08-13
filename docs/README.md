@@ -1,18 +1,18 @@
 # flowerss bot
 
-> 一个支持应用内即时预览的 Telegram RSS Bot。
+> 一個支援應用內即時預覽的 Telegram RSS Bot。
 
 ## Features
 
-- 常见的 RSS Bot 该有的功能；
-- 支持 Telegram 应用内即时预览；
-- 支持为 Group 和 Channel 订阅 RSS 消息；
-- 丰富的订阅设置。
+- 常見的 RSS Bot 該有的功能；
+- 支援 Telegram 應用內即時預覽；
+- 支援為 Group 和 Channel 訂閱 RSS 訊息；
+- 豐富的訂閱設定。
 
 <img src="https://github.com/rssflow/img/raw/master/images/rssflow_demo.gif" width = "300"/>
 
 
 
-## 问题反馈
+## 問題回饋
 
-如果你在使用过程中遇到问题，请在 GitHub 提交 Issue，并附上 Bot 日志。
+如果你在使用過程中遇到問題，請在 GitHub 提交 Issue，並附上 Bot 日誌。

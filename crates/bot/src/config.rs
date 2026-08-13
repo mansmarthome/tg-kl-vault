@@ -89,6 +89,7 @@ impl Config {
         set_string(&mut self.log.level, "FLOWERSS_LOG_LEVEL");
         set_parse(&mut self.fetch.concurrency, "FLOWERSS_FETCH_CONCURRENCY")?;
         set_parse(&mut self.fetch.retention_days, "FLOWERSS_FETCH_RETENTION_DAYS")?;
+        set_parse(&mut self.fetch.max_item_age_days, "FLOWERSS_FETCH_MAX_ITEM_AGE_DAYS")?;
         set_parse(&mut self.bookmark.ai.provider, "FLOWERSS_BOOKMARK_AI_PROVIDER")?;
         set_string(&mut self.bookmark.ai.api_key, "FLOWERSS_BOOKMARK_AI_API_KEY");
         set_string(&mut self.bookmark.ai.model, "FLOWERSS_BOOKMARK_AI_MODEL");
@@ -221,11 +222,16 @@ impl Default for LogConfig {
 pub struct FetchConfig {
     pub concurrency: usize,
     pub retention_days: u32,
+    /// Never push an item whose publish date is older than this, however "new"
+    /// the dedup ledger thinks it is. Guards against a feed republishing its
+    /// whole archive after a GUID change and against ledger rows aged out by
+    /// `retention_days`. `0` disables the gate. See `feed::parse::is_stale_item`.
+    pub max_item_age_days: u32,
 }
 
 impl Default for FetchConfig {
     fn default() -> Self {
-        Self { concurrency: 8, retention_days: 90 }
+        Self { concurrency: 8, retention_days: 90, max_item_age_days: 30 }
     }
 }
 
@@ -396,6 +402,7 @@ mod tests {
         assert_eq!(ERROR_THRESHOLD, 100);
         assert_eq!(cfg.fetch.concurrency, 8);
         assert_eq!(cfg.fetch.retention_days, 90);
+        assert_eq!(cfg.fetch.max_item_age_days, 30);
     }
 
     #[test]
@@ -419,6 +426,7 @@ mod tests {
             ("FLOWERSS_LOG_LEVEL", "debug"),
             ("FLOWERSS_FETCH_CONCURRENCY", "3"),
             ("FLOWERSS_FETCH_RETENTION_DAYS", "14"),
+            ("FLOWERSS_FETCH_MAX_ITEM_AGE_DAYS", "7"),
             ("FLOWERSS_BOOKMARK_AI_PROVIDER", "gemini"),
             ("FLOWERSS_BOOKMARK_AI_API_KEY", "secret-key"),
             ("FLOWERSS_BOOKMARK_AI_MODEL", "gemini-x"),
@@ -456,6 +464,7 @@ mod tests {
         assert_eq!(cfg.log.level, "debug");
         assert_eq!(cfg.fetch.concurrency, 3);
         assert_eq!(cfg.fetch.retention_days, 14);
+        assert_eq!(cfg.fetch.max_item_age_days, 7);
         assert_eq!(cfg.bookmark.ai.provider, AiProvider::Gemini);
         assert_eq!(cfg.bookmark.ai.api_key, "secret-key");
         assert_eq!(cfg.bookmark.ai.model, "gemini-x");

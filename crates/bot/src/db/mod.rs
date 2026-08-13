@@ -198,6 +198,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../../../../migrations/0002_rust_additive.sql")),
     (3, include_str!("../../../../migrations/0003_options_unique_name.sql")),
     (4, include_str!("../../../../migrations/0004_bookmarks.sql")),
+    (5, include_str!("../../../../migrations/0005_source_health.sql")),
 ];
 
 async fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
@@ -295,5 +296,50 @@ mod tests {
 
         assert!(!info.exists());
         assert!(!db_path.exists());
+    }
+
+    /// A production `data.db` predates migration 0005. Opening it must add the
+    /// health columns in place, keep every existing row, and be a no-op the
+    /// second time — `ALTER TABLE ADD COLUMN` would error if it ever re-ran.
+    #[tokio::test]
+    async fn legacy_database_gains_the_health_columns_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let path = db_path.to_str().unwrap();
+
+        // Stand up a pre-0005 database the way an existing deployment has it:
+        // migrations 1-4 applied and recorded.
+        {
+            let db = connect(path).await.unwrap();
+            db.conn
+                .execute_batch(
+                    "ALTER TABLE sources DROP COLUMN last_error; \
+                     ALTER TABLE sources DROP COLUMN last_error_at; \
+                     ALTER TABLE sources DROP COLUMN last_success_at; \
+                     DELETE FROM _kl_migrations WHERE version = 5; \
+                     INSERT INTO sources (link, title, error_count, next_fetch_at) \
+                       VALUES ('https://old.test/feed', 'Legacy Feed', 3, 0);",
+                )
+                .await
+                .unwrap();
+        }
+
+        for pass in 1..=2 {
+            let db = connect(path).await.unwrap();
+            let mut rows = db
+                .conn
+                .query(
+                    "SELECT title, error_count, last_error, last_success_at FROM sources",
+                    (),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("pass {pass} must open the upgraded db: {e}"));
+            let row = rows.next().await.unwrap().expect("legacy row must survive");
+            assert_eq!(row.get::<String>(0).unwrap(), "Legacy Feed");
+            assert_eq!(row.get::<i64>(1).unwrap(), 3);
+            assert_eq!(row.get::<Option<String>>(2).unwrap(), None);
+            assert_eq!(row.get::<Option<i64>>(3).unwrap(), None);
+            assert!(rows.next().await.unwrap().is_none(), "no rows duplicated");
+        }
     }
 }

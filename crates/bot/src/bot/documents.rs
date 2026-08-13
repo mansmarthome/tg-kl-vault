@@ -16,14 +16,14 @@ pub async fn handle_document(bot: Bot, msg: Message, state: Arc<BotState>) -> Re
 
     let is_opml = document.file_name.as_deref().is_some_and(|name| name.ends_with(".opml"));
     if !is_opml {
-        bot.send_message(msg.chat.id, "请发送正确的 OPML 文件").await?;
+        bot.send_message(msg.chat.id, "請傳送正確的 OPML 檔案").await?;
         return Ok(());
     }
 
     let bytes = match download_document(&bot, document.file.id.clone()).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            bot.send_message(msg.chat.id, "获取文件失败").await?;
+            bot.send_message(msg.chat.id, "取得檔案失敗").await?;
             return Ok(());
         }
     };
@@ -31,7 +31,7 @@ pub async fn handle_document(bot: Bot, msg: Message, state: Arc<BotState>) -> Re
     let outlines = match import_opml(&String::from_utf8_lossy(&bytes)) {
         Ok(outlines) => outlines,
         Err(_) => {
-            bot.send_message(msg.chat.id, "获取文件失败").await?;
+            bot.send_message(msg.chat.id, "取得檔案失敗").await?;
             return Ok(());
         }
     };
@@ -69,16 +69,16 @@ async fn download_document(bot: &Bot, file_id: teloxide::types::FileId) -> anyho
 
 /// Byte-for-byte port of the report built in `OnDocument.Handle`.
 fn render_import_report(success: &[OpmlSource], failed: &[OpmlSource]) -> String {
-    let mut out = format!("<b>导入成功：{}，导入失败：{}</b>\n", success.len(), failed.len());
+    let mut out = format!("<b>匯入成功：{}，匯入失敗：{}</b>\n", success.len(), failed.len());
     if !success.is_empty() {
-        out.push_str("<b>以下订阅源导入成功:</b>\n");
+        out.push_str("<b>以下訂閱源匯入成功:</b>\n");
         for (i, outline) in success.iter().enumerate() {
             push_outline_line(&mut out, i + 1, outline);
         }
         out.push('\n');
     }
     if !failed.is_empty() {
-        out.push_str("<b>以下订阅源导入失败:</b>\n");
+        out.push_str("<b>以下訂閱源匯入失敗:</b>\n");
         for (i, outline) in failed.iter().enumerate() {
             push_outline_line(&mut out, i + 1, outline);
         }

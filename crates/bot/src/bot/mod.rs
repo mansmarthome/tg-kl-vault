@@ -2,6 +2,7 @@ pub mod callback;
 pub mod callbacks;
 pub mod commands;
 pub mod documents;
+pub mod feedcheck;
 pub mod bookmarks;
 pub mod broadcast;
 pub mod i18n;

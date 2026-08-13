@@ -39,19 +39,19 @@ pub fn feed_setting_keyboard(
     enable_telegraph: Option<i64>,
 ) -> InlineKeyboardMarkup {
     let toggle_update_text = if source_error_count >= error_threshold {
-        "重启更新"
+        "重啟更新"
     } else {
-        "暂停更新"
+        "暫停更新"
     };
     let toggle_notice_text = if enable_notification == Some(1) {
-        "关闭通知"
+        "關閉通知"
     } else {
-        "开启通知"
+        "開啟通知"
     };
     let toggle_telegraph_text = if enable_telegraph == Some(1) {
-        "关闭 Telegraph 转码"
+        "關閉 Telegraph 轉碼"
     } else {
-        "开启 Telegraph 转码"
+        "開啟 Telegraph 轉碼"
     };
 
     InlineKeyboardMarkup::new(vec![
@@ -71,7 +71,7 @@ pub fn feed_setting_keyboard(
                 encode_telebot_callback(Button::SetToggleTelegraph, attachment),
             ),
             InlineKeyboardButton::callback(
-                "标签设置",
+                "標籤設定",
                 encode_telebot_callback(Button::SetSetSubTag, attachment),
             ),
         ],
@@ -88,7 +88,7 @@ pub fn unsuball_confirm_keyboard() -> InlineKeyboardMarkup {
     };
     InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback(
-            "确认",
+            "確認",
             encode_telebot_callback(Button::UnsubAllConfirm, empty),
         ),
         InlineKeyboardButton::callback(

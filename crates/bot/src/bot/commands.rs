@@ -5,33 +5,33 @@ use teloxide::utils::command::BotCommands;
 #[derive(Debug, Clone, PartialEq, Eq, BotCommands)]
 #[command(rename_rule = "lowercase")]
 pub enum Command {
-    #[command(description = "开始使用")]
+    #[command(description = "開始使用")]
     Start,
-    #[command(description = "订阅RSS源")]
+    #[command(description = "訂閱 RSS 源")]
     Sub(String),
-    #[command(description = "退订RSS源")]
+    #[command(description = "退訂 RSS 源")]
     Unsub(String),
-    #[command(description = "已订阅的RSS源")]
+    #[command(description = "已訂閱的 RSS 源")]
     List,
-    #[command(description = "设置订阅")]
+    #[command(description = "設定訂閱")]
     Set,
-    #[command(description = "设置")]
+    #[command(description = "設定")]
     Settings,
-    #[command(description = "检查当前订阅")]
+    #[command(description = "立刻抓取所有訂閱並推播新文章")]
     Check,
-    #[command(description = "设置rss订阅标签")]
+    #[command(description = "設定 RSS 訂閱標籤")]
     Setfeedtag(String),
-    #[command(description = "取消所有订阅")]
+    #[command(description = "取消所有訂閱")]
     Unsuball,
-    #[command(description = "开启抓取订阅更新")]
+    #[command(description = "開啟抓取訂閱更新")]
     Activeall,
-    #[command(description = "停止抓取所有订阅更新")]
+    #[command(description = "停止抓取所有訂閱更新")]
     Pauseall,
     #[command(description = "")]
     Ping,
-    #[command(description = "帮助")]
+    #[command(description = "幫助")]
     Help,
-    #[command(description = "Bot 版本信息")]
+    #[command(description = "Bot 版本資訊")]
     Version,
     // Bookmarks — appended after the frozen Go-parity 14 (never inserted).
     #[command(description = "收藏網址")]
@@ -48,27 +48,34 @@ pub enum Command {
     Bmtag(String),
     #[command(description = "")]
     Bmdel(String),
+    // Feed health — appended after bookmarks, same frozen-prefix rule.
+    #[command(description = "檢查訂閱的 feed 是否還有效")]
+    Feedcheck,
 }
 
-/// The 14 commands the Go version shipped, frozen as a Go-parity golden. New
-/// commands (bookmarks) are appended to the `Command` enum, never inserted into
-/// this list; the test below pins that the derived menu *begins* with exactly
-/// these, in this order.
+/// The 14 command *names* the Go version shipped, frozen as a Go-parity golden:
+/// new commands (bookmarks, feedcheck) are appended to the `Command` enum, never
+/// inserted into this list, and the test below pins that the derived menu
+/// *begins* with exactly these, in this order.
+///
+/// The descriptions are deliberately no longer byte-for-byte with Go: they are
+/// display-only text and this bot's UI language is zh-TW throughout. Names still
+/// are, because those are the wire format users type.
 pub const COMMANDS: &[(&str, &str)] = &[
-    ("start", "开始使用"),
-    ("sub", "订阅RSS源"),
-    ("unsub", "退订RSS源"),
-    ("list", "已订阅的RSS源"),
-    ("set", "设置订阅"),
-    ("settings", "设置"),
-    ("check", "检查当前订阅"),
-    ("setfeedtag", "设置rss订阅标签"),
-    ("unsuball", "取消所有订阅"),
-    ("activeall", "开启抓取订阅更新"),
-    ("pauseall", "停止抓取所有订阅更新"),
+    ("start", "開始使用"),
+    ("sub", "訂閱 RSS 源"),
+    ("unsub", "退訂 RSS 源"),
+    ("list", "已訂閱的 RSS 源"),
+    ("set", "設定訂閱"),
+    ("settings", "設定"),
+    ("check", "立刻抓取所有訂閱並推播新文章"),
+    ("setfeedtag", "設定 RSS 訂閱標籤"),
+    ("unsuball", "取消所有訂閱"),
+    ("activeall", "開啟抓取訂閱更新"),
+    ("pauseall", "停止抓取所有訂閱更新"),
     ("ping", ""),
-    ("help", "帮助"),
-    ("version", "Bot 版本信息"),
+    ("help", "幫助"),
+    ("version", "Bot 版本資訊"),
 ];
 
 #[cfg(test)]
@@ -76,7 +83,9 @@ mod tests {
     use super::*;
 
     /// The derived command list must begin with exactly the frozen 14 Go-parity
-    /// commands, in order (names and descriptions). Anything new lands after.
+    /// command names, in order. Anything new lands after. Descriptions are
+    /// checked too, so the enum and `COMMANDS` can never drift apart — but they
+    /// are this repo's zh-TW text, not Go's.
     #[test]
     fn derived_commands_begin_with_frozen_go_parity_set() {
         let derived = Command::bot_commands()

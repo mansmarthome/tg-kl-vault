@@ -31,6 +31,12 @@ pub struct Source {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub next_fetch_at: i64,
+    /// Health history (migration 0005). `error_count` alone only says "it is
+    /// broken"; these say *how* and *since when*, and are what `/feedcheck`
+    /// contrasts against a live probe.
+    pub last_error: Option<String>,
+    pub last_error_at: Option<i64>,
+    pub last_success_at: Option<i64>,
 }
 
 impl FromRow for Source {
@@ -45,6 +51,9 @@ impl FromRow for Source {
             etag: row.get(6)?,
             last_modified: row.get(7)?,
             next_fetch_at: row.get(8)?,
+            last_error: row.get(9)?,
+            last_error_at: row.get(10)?,
+            last_success_at: row.get(11)?,
         })
     }
 }
