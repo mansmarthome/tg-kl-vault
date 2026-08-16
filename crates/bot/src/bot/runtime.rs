@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use teloxide::{
     prelude::*,
-    types::{ChatId, ForceReply, LinkPreviewOptions, ParseMode},
+    types::{ChatId, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, ParseMode},
     utils::command::BotCommands,
 };
 use tokio::sync::watch;
@@ -154,8 +154,30 @@ async fn handle_command(
     Ok(())
 }
 
+pub const PROMPT_CANCEL_PREFIX: &str = "prompt:cancel:";
+
 fn force_reply(placeholder: &str) -> ForceReply {
     ForceReply::new().input_field_placeholder(placeholder.to_owned())
+}
+
+pub async fn send_force_reply_prompt(
+    bot: &Bot,
+    chat_id: ChatId,
+    lang: Lang,
+    prompt: &str,
+    placeholder: &str,
+) -> ResponseResult<()> {
+    let prompt_message = bot
+        .send_message(chat_id, prompt)
+        .reply_markup(force_reply(placeholder))
+        .await?;
+    bot.send_message(chat_id, lang.prompt_cancel_control())
+        .reply_markup(InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+            lang.prompt_cancel_button(),
+            format!("{PROMPT_CANCEL_PREFIX}{}", prompt_message.id.0),
+        )]]))
+        .await?;
+    Ok(())
 }
 
 fn is_cancel(payload: &str) -> bool {
@@ -239,9 +261,14 @@ async fn handle_subscribe(
 ) -> ResponseResult<()> {
     let lang = chat_lang(&state.repo, msg.chat.id.0).await;
     if payload.is_empty() {
-        bot.send_message(msg.chat.id, lang.sub_prompt())
-            .reply_markup(force_reply(lang.sub_placeholder()))
-            .await?;
+        send_force_reply_prompt(
+            bot,
+            msg.chat.id,
+            lang,
+            lang.sub_prompt(),
+            lang.sub_placeholder(),
+        )
+        .await?;
         return Ok(());
     }
 
@@ -249,8 +276,15 @@ async fn handle_subscribe(
         Ok(source) => source,
         Err(err) => {
             bot.send_message(msg.chat.id, lang.sub_failed_retry(&err.to_string()))
-                .reply_markup(force_reply(lang.sub_placeholder()))
                 .await?;
+            send_force_reply_prompt(
+                bot,
+                msg.chat.id,
+                lang,
+                lang.sub_prompt(),
+                lang.sub_placeholder(),
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -355,9 +389,14 @@ async fn handle_set_tag(
     let lang = chat_lang(&state.repo, msg.chat.id.0).await;
     let mut parts = payload.split_whitespace();
     let Some(source_id) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
-        bot.send_message(msg.chat.id, lang.setfeedtag_prompt())
-            .reply_markup(force_reply(lang.setfeedtag_placeholder()))
-            .await?;
+        send_force_reply_prompt(
+            bot,
+            msg.chat.id,
+            lang,
+            lang.setfeedtag_prompt(),
+            lang.setfeedtag_placeholder(),
+        )
+        .await?;
         return Ok(());
     };
     // Go: `subscription.Tag = "#" + strings.Join(tags, " #")` — note this

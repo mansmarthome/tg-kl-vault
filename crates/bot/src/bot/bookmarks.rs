@@ -4,7 +4,7 @@
 use teloxide::{
     prelude::*,
     types::{
-        ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageEntityKind, MessageId,
+        InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageEntityKind, MessageId,
         ParseMode, ReplyParameters,
     },
     utils::html::escape,
@@ -15,7 +15,7 @@ use crate::bookmark::render::{self, ListPageData, RenderedBookmark};
 use crate::tagging::mcp::McpClient;
 use crate::bot::i18n::Lang;
 use crate::bot::pagination::{nav_row, Page};
-use crate::bot::runtime::{chat_lang, no_preview, to_request_error, BotState};
+use crate::bot::runtime::{chat_lang, no_preview, send_force_reply_prompt, to_request_error, BotState};
 use crate::config::Config;
 use crate::db::bookmarks::{now_unix, NewBookmark};
 use crate::db::models::Bookmark;
@@ -29,10 +29,6 @@ const NOTE_MAX_CHARS: usize = 1000;
 pub const BM_BTN_PREFIX: &str = "tg-kl-vault:bmbtn:";
 pub const BM_AI_PREFIX: &str = "tg-kl-vault:bmai:";
 pub const BM_SUM_PREFIX: &str = "tg-kl-vault:bmsum:";
-
-fn force_reply(placeholder: &str) -> ForceReply {
-    ForceReply::new().input_field_placeholder(placeholder.to_owned())
-}
 
 fn bm_btn_key(chat_id: i64) -> String {
     format!("{BM_BTN_PREFIX}{chat_id}")
@@ -483,18 +479,15 @@ pub async fn handle_bm(bot: &Bot, msg: &Message, state: &BotState, payload: &str
     } else if let Some(url) = msg.reply_to_message().and_then(extract_url) {
         url
     } else {
-        bot.send_message(chat_id, lang.bm_prompt())
-            .reply_markup(force_reply(lang.bm_placeholder()))
-            .await?;
+        send_force_reply_prompt(bot, chat_id, lang, lang.bm_prompt(), lang.bm_placeholder()).await?;
         return Ok(());
     };
 
     let url = match normalize_url(&raw) {
         Ok(url) => url,
         Err(_) => {
-            bot.send_message(chat_id, lang.bm_invalid_url_retry())
-                .reply_markup(force_reply(lang.bm_placeholder()))
-                .await?;
+            bot.send_message(chat_id, lang.bm_invalid_url_retry()).await?;
+            send_force_reply_prompt(bot, chat_id, lang, lang.bm_prompt(), lang.bm_placeholder()).await?;
             return Ok(());
         }
     };
@@ -560,9 +553,14 @@ pub async fn handle_bmsearch(bot: &Bot, msg: &Message, state: &BotState, payload
     let lang = chat_lang(&state.repo, chat_id.0).await;
     let query = payload.trim();
     if query.is_empty() || query.chars().count() > 100 {
-        bot.send_message(chat_id, lang.bm_search_prompt())
-            .reply_markup(force_reply(lang.bm_search_placeholder()))
-            .await?;
+        send_force_reply_prompt(
+            bot,
+            chat_id,
+            lang,
+            lang.bm_search_prompt(),
+            lang.bm_search_placeholder(),
+        )
+        .await?;
         return Ok(());
     }
     let hits = state
@@ -608,15 +606,25 @@ pub async fn handle_bmnote(bot: &Bot, msg: &Message, state: &BotState, payload: 
     let chat_id = msg.chat.id;
     let lang = chat_lang(&state.repo, chat_id.0).await;
     let Some((id_str, text)) = payload.trim().split_once(char::is_whitespace) else {
-        bot.send_message(chat_id, lang.bm_note_prompt())
-            .reply_markup(force_reply(lang.bm_note_placeholder()))
-            .await?;
+        send_force_reply_prompt(
+            bot,
+            chat_id,
+            lang,
+            lang.bm_note_prompt(),
+            lang.bm_note_placeholder(),
+        )
+        .await?;
         return Ok(());
     };
     let Ok(id) = id_str.parse::<i64>() else {
-        bot.send_message(chat_id, lang.bm_note_prompt())
-            .reply_markup(force_reply(lang.bm_note_placeholder()))
-            .await?;
+        send_force_reply_prompt(
+            bot,
+            chat_id,
+            lang,
+            lang.bm_note_prompt(),
+            lang.bm_note_placeholder(),
+        )
+        .await?;
         return Ok(());
     };
     let note: String = text.trim().chars().take(NOTE_MAX_CHARS).collect();
@@ -635,9 +643,14 @@ pub async fn handle_bmtag(bot: &Bot, msg: &Message, state: &BotState, payload: &
     let lang = chat_lang(&state.repo, chat_id.0).await;
     let mut parts = payload.split_whitespace();
     let Some(id) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
-        bot.send_message(chat_id, lang.bm_tag_prompt())
-            .reply_markup(force_reply(lang.bm_tag_placeholder()))
-            .await?;
+        send_force_reply_prompt(
+            bot,
+            chat_id,
+            lang,
+            lang.bm_tag_prompt(),
+            lang.bm_tag_placeholder(),
+        )
+        .await?;
         return Ok(());
     };
     let slugs: Vec<&str> = parts.filter_map(taxonomy::normalize).collect();
@@ -655,9 +668,14 @@ pub async fn handle_bmdel(bot: &Bot, msg: &Message, state: &BotState, payload: &
     let chat_id = msg.chat.id;
     let lang = chat_lang(&state.repo, chat_id.0).await;
     let Ok(id) = payload.trim().parse::<i64>() else {
-        bot.send_message(chat_id, lang.bm_delete_prompt())
-            .reply_markup(force_reply(lang.bm_delete_placeholder()))
-            .await?;
+        send_force_reply_prompt(
+            bot,
+            chat_id,
+            lang,
+            lang.bm_delete_prompt(),
+            lang.bm_delete_placeholder(),
+        )
+        .await?;
         return Ok(());
     };
     let ok = state.repo.delete_bookmark(chat_id.0, id).await.map_err(to_request_error)?;

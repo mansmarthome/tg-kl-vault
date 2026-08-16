@@ -62,6 +62,8 @@ strings! {
     // ── ForceReply prompts ─────────────────────────────────────────────────
     prompt_cancel_hint => en: "type \"cancel\" to stop", zh: "輸入「取消」可中止";
     prompt_cancelled => en: "Cancelled.", zh: "已取消。";
+    prompt_cancel_button => en: "Cancel", zh: "取消";
+    prompt_cancel_control => en: "Tap to cancel this prompt.", zh: "點選以取消這次輸入。";
     sub_prompt => en: "🔗 Reply with the RSS URL to subscribe (send only the URL; type \"cancel\" to stop)", zh: "🔗 請回覆此訊息貼上要訂閱的 RSS 網址（直接傳網址即可；輸入「取消」可中止）";
     sub_placeholder => en: "https://example.com/feed", zh: "https://example.com/feed";
     setfeedtag_prompt => en: "🏷️ Reply with: source ID tag1 tag2 (up to three tags; type \"cancel\" to stop)", zh: "🏷️ 請回覆此訊息輸入：來源 ID 標籤1 標籤2（最多三個標籤；輸入「取消」可中止）";

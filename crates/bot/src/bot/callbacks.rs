@@ -14,7 +14,10 @@ use crate::{
             settings_language_keyboard, settings_opml_keyboard,
         },
         render::{render_feed_setting, FeedSettingData},
-        runtime::{chat_lang, export_chat_opml, now_unix, set_chat_lang, BotState, Lang},
+        runtime::{
+            chat_lang, export_chat_opml, now_unix, set_chat_lang, BotState, Lang,
+            PROMPT_CANCEL_PREFIX,
+        },
     },
     config::ERROR_THRESHOLD,
     db::models::{Source, Subscribe},
@@ -41,6 +44,11 @@ pub async fn handle_callback(
     };
     let chat_id = message.chat().id;
     let message_id = message.id();
+
+    if let Some(prompt_id) = data.strip_prefix(PROMPT_CANCEL_PREFIX) {
+        return handle_prompt_cancel_callback(&bot, &query, &state, prompt_id, chat_id, message_id)
+            .await;
+    }
 
     if let Some(rest) = data.strip_prefix("bm:") {
         return crate::bot::bookmarks::handle_bm_callback(
@@ -145,6 +153,28 @@ async fn respond_toast(bot: &Bot, query: &CallbackQuery, text: &str) -> Response
     bot.answer_callback_query(query.id.clone())
         .text(text)
         .await?;
+    Ok(())
+}
+
+async fn handle_prompt_cancel_callback(
+    bot: &Bot,
+    query: &CallbackQuery,
+    state: &BotState,
+    prompt_id: &str,
+    chat_id: ChatId,
+    cancel_message_id: MessageId,
+) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
+    bot.answer_callback_query(query.id.clone())
+        .text(lang.prompt_cancelled())
+        .await?;
+
+    if let Ok(raw_id) = prompt_id.parse::<i32>() {
+        let _ = bot
+            .edit_message_text(chat_id, MessageId(raw_id), lang.prompt_cancelled())
+            .await;
+    }
+    let _ = bot.delete_message(chat_id, cancel_message_id).await;
     Ok(())
 }
 
