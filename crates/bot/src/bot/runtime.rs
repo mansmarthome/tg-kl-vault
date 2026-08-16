@@ -154,9 +154,6 @@ async fn handle_command(
     Ok(())
 }
 
-const SUB_PROMPT: &str = "🔗 請回覆此訊息貼上要訂閱的 RSS 網址（直接傳網址即可；輸入「取消」可中止）";
-const SETFEEDTAG_PROMPT: &str = "🏷️ 請回覆此訊息輸入：來源 ID 標籤1 標籤2（最多三個標籤；輸入「取消」可中止）";
-
 fn force_reply(placeholder: &str) -> ForceReply {
     ForceReply::new().input_field_placeholder(placeholder.to_owned())
 }
@@ -165,44 +162,70 @@ fn is_cancel(payload: &str) -> bool {
     matches!(payload.trim().to_ascii_lowercase().as_str(), "取消" | "cancel" | "/cancel")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptKind {
+    Sub,
+    SetFeedTag,
+    Bm,
+    BmSearch,
+    BmNote,
+    BmTag,
+    BmDel,
+}
+
+fn prompt_kind(text: &str) -> Option<PromptKind> {
+    for lang in [Lang::En, Lang::ZhTw] {
+        if text == lang.sub_prompt() {
+            return Some(PromptKind::Sub);
+        }
+        if text == lang.setfeedtag_prompt() {
+            return Some(PromptKind::SetFeedTag);
+        }
+        if text == lang.bm_prompt() {
+            return Some(PromptKind::Bm);
+        }
+        if text == lang.bm_search_prompt() {
+            return Some(PromptKind::BmSearch);
+        }
+        if text == lang.bm_note_prompt() {
+            return Some(PromptKind::BmNote);
+        }
+        if text == lang.bm_tag_prompt() {
+            return Some(PromptKind::BmTag);
+        }
+        if text == lang.bm_delete_prompt() {
+            return Some(PromptKind::BmDel);
+        }
+    }
+    None
+}
+
 async fn handle_prompt_reply(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
     let replied_to = msg
         .reply_to_message()
         .and_then(|m| m.text())
         .unwrap_or_default();
     let payload = msg.text().unwrap_or_default().trim().to_owned();
+    let Some(kind) = prompt_kind(replied_to) else {
+        return Ok(());
+    };
 
-    if is_prompt(replied_to) && is_cancel(&payload) {
-        bot.send_message(msg.chat.id, "已取消。").await?;
+    if is_cancel(&payload) {
+        let lang = chat_lang(&state.repo, msg.chat.id.0).await;
+        bot.send_message(msg.chat.id, lang.prompt_cancelled()).await?;
         return Ok(());
     }
 
-    match replied_to {
-        SUB_PROMPT => handle_subscribe(&bot, &msg, &state, &payload).await?,
-        SETFEEDTAG_PROMPT => handle_set_tag(&bot, &msg, &state, &payload).await?,
-        bookmarks::BM_PROMPT => bookmarks::handle_bm(&bot, &msg, &state, &payload).await?,
-        bookmarks::BMSEARCH_PROMPT => {
-            bookmarks::handle_bmsearch(&bot, &msg, &state, &payload).await?
-        }
-        bookmarks::BMNOTE_PROMPT => bookmarks::handle_bmnote(&bot, &msg, &state, &payload).await?,
-        bookmarks::BMTAG_PROMPT => bookmarks::handle_bmtag(&bot, &msg, &state, &payload).await?,
-        bookmarks::BMDEL_PROMPT => bookmarks::handle_bmdel(&bot, &msg, &state, &payload).await?,
-        _ => {}
+    match kind {
+        PromptKind::Sub => handle_subscribe(&bot, &msg, &state, &payload).await?,
+        PromptKind::SetFeedTag => handle_set_tag(&bot, &msg, &state, &payload).await?,
+        PromptKind::Bm => bookmarks::handle_bm(&bot, &msg, &state, &payload).await?,
+        PromptKind::BmSearch => bookmarks::handle_bmsearch(&bot, &msg, &state, &payload).await?,
+        PromptKind::BmNote => bookmarks::handle_bmnote(&bot, &msg, &state, &payload).await?,
+        PromptKind::BmTag => bookmarks::handle_bmtag(&bot, &msg, &state, &payload).await?,
+        PromptKind::BmDel => bookmarks::handle_bmdel(&bot, &msg, &state, &payload).await?,
     }
     Ok(())
-}
-
-fn is_prompt(text: &str) -> bool {
-    matches!(
-        text,
-        SUB_PROMPT
-            | SETFEEDTAG_PROMPT
-            | bookmarks::BM_PROMPT
-            | bookmarks::BMSEARCH_PROMPT
-            | bookmarks::BMNOTE_PROMPT
-            | bookmarks::BMTAG_PROMPT
-            | bookmarks::BMDEL_PROMPT
-    )
 }
 
 // Go sends these replies with legacy `tb.ModeMarkdown`, not MarkdownV2 (which
@@ -214,9 +237,10 @@ async fn handle_subscribe(
     state: &BotState,
     payload: &str,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, msg.chat.id.0).await;
     if payload.is_empty() {
-        bot.send_message(msg.chat.id, SUB_PROMPT)
-            .reply_markup(force_reply("https://example.com/feed"))
+        bot.send_message(msg.chat.id, lang.sub_prompt())
+            .reply_markup(force_reply(lang.sub_placeholder()))
             .await?;
         return Ok(());
     }
@@ -224,8 +248,8 @@ async fn handle_subscribe(
     let source = match create_source(&state.repo, &state.fetcher, payload).await {
         Ok(source) => source,
         Err(err) => {
-            bot.send_message(msg.chat.id, format!("{err}，訂閱失敗。請重新貼上 RSS 網址，或輸入「取消」。"))
-                .reply_markup(force_reply("https://example.com/feed"))
+            bot.send_message(msg.chat.id, lang.sub_failed_retry(&err.to_string()))
+                .reply_markup(force_reply(lang.sub_placeholder()))
                 .await?;
             return Ok(());
         }
@@ -328,10 +352,11 @@ async fn handle_set_tag(
     state: &BotState,
     payload: &str,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, msg.chat.id.0).await;
     let mut parts = payload.split_whitespace();
     let Some(source_id) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
-        bot.send_message(msg.chat.id, SETFEEDTAG_PROMPT)
-            .reply_markup(force_reply("12 AI 光通訊"))
+        bot.send_message(msg.chat.id, lang.setfeedtag_prompt())
+            .reply_markup(force_reply(lang.setfeedtag_placeholder()))
             .await?;
         return Ok(());
     };

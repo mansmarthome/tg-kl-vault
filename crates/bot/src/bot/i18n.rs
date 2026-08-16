@@ -59,6 +59,14 @@ strings! {
     interval_hint => en: "Choose a refresh interval for all subscriptions in this chat.", zh: "請選擇此聊天室所有訂閱的更新頻率。";
     lang_updated => en: "Language updated: English", zh: "語言已更新：繁體中文";
 
+    // ── ForceReply prompts ─────────────────────────────────────────────────
+    prompt_cancel_hint => en: "type \"cancel\" to stop", zh: "輸入「取消」可中止";
+    prompt_cancelled => en: "Cancelled.", zh: "已取消。";
+    sub_prompt => en: "🔗 Reply with the RSS URL to subscribe (send only the URL; type \"cancel\" to stop)", zh: "🔗 請回覆此訊息貼上要訂閱的 RSS 網址（直接傳網址即可；輸入「取消」可中止）";
+    sub_placeholder => en: "https://example.com/feed", zh: "https://example.com/feed";
+    setfeedtag_prompt => en: "🏷️ Reply with: source ID tag1 tag2 (up to three tags; type \"cancel\" to stop)", zh: "🏷️ 請回覆此訊息輸入：來源 ID 標籤1 標籤2（最多三個標籤；輸入「取消」可中止）";
+    setfeedtag_placeholder => en: "12 AI optics", zh: "12 AI 光通訊";
+
     // ── Bookmarks ──────────────────────────────────────────────────────────
     bm_settings_button => en: "🔖 Bookmarks", zh: "🔖 書籤";
     bm_settings_export => en: "⬇ Export bookmarks", zh: "⬇ 匯出書籤";
@@ -89,6 +97,16 @@ strings! {
     bm_bad_action => en: "Unknown action.", zh: "未知的操作。";
     bm_usage => en: "Usage: /bm <url> (or reply to a message with a link).", zh: "用法：/bm <網址>（或回覆一則含連結的訊息）。";
     bm_invalid_url => en: "That doesn't look like a valid http(s) URL.", zh: "這看起來不是有效的 http(s) 網址。";
+    bm_prompt => en: "🔖 Reply with the URL to bookmark (type \"cancel\" to stop)", zh: "🔖 請回覆此訊息貼上要收藏的網址（輸入「取消」可中止）";
+    bm_placeholder => en: "https://example.com/article", zh: "https://example.com/article";
+    bm_search_prompt => en: "🔍 Reply with bookmark search keywords (type \"cancel\" to stop)", zh: "🔍 請回覆此訊息輸入要搜尋的書籤關鍵字（輸入「取消」可中止）";
+    bm_search_placeholder => en: "keyword", zh: "關鍵字";
+    bm_note_prompt => en: "📝 Reply with: bookmark ID note text (type \"cancel\" to stop)", zh: "📝 請回覆此訊息輸入：書籤 ID 備註內容（輸入「取消」可中止）";
+    bm_note_placeholder => en: "123 useful for later research", zh: "123 這篇很適合之後研究";
+    bm_tag_prompt => en: "🏷️ Reply with: bookmark ID tag1 tag2 (type \"cancel\" to stop)", zh: "🏷️ 請回覆此訊息輸入：書籤 ID 標籤1 標籤2（輸入「取消」可中止）";
+    bm_tag_placeholder => en: "123 AI optics", zh: "123 AI 光通訊";
+    bm_delete_prompt => en: "🗑️ Reply with the bookmark ID to delete (type \"cancel\" to stop)", zh: "🗑️ 請回覆此訊息輸入要刪除的書籤 ID（輸入「取消」可中止）";
+    bm_delete_placeholder => en: "123", zh: "123";
     bm_note_usage => en: "Usage: /bmnote <id> <text>", zh: "用法：/bmnote <id> <文字>";
     bm_note_saved => en: "Note saved.", zh: "備註已儲存。";
     bm_tag_usage => en: "Usage: /bmtag <id> <slug…>", zh: "用法：/bmtag <id> <分類…>";
@@ -107,6 +125,20 @@ impl Lang {
         match self {
             Self::En => format!("Updated {count} subscriptions"),
             Self::ZhTw => format!("已更新 {count} 個訂閱"),
+        }
+    }
+
+    pub fn sub_failed_retry(self, err: &str) -> String {
+        match self {
+            Self::En => format!("{err}; subscription failed. Reply with the RSS URL again, or type \"cancel\"."),
+            Self::ZhTw => format!("{err}，訂閱失敗。請重新貼上 RSS 網址，或輸入「取消」。"),
+        }
+    }
+
+    pub fn bm_invalid_url_retry(self) -> String {
+        match self {
+            Self::En => format!("{} Reply with the URL again, or type \"cancel\".", self.bm_invalid_url()),
+            Self::ZhTw => format!("{} 請重新貼上網址，或輸入「取消」。", self.bm_invalid_url()),
         }
     }
 

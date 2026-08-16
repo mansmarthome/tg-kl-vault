@@ -30,12 +30,6 @@ pub const BM_BTN_PREFIX: &str = "tg-kl-vault:bmbtn:";
 pub const BM_AI_PREFIX: &str = "tg-kl-vault:bmai:";
 pub const BM_SUM_PREFIX: &str = "tg-kl-vault:bmsum:";
 
-pub const BM_PROMPT: &str = "🔖 請回覆此訊息貼上要收藏的網址（輸入「取消」可中止）";
-pub const BMSEARCH_PROMPT: &str = "🔍 請回覆此訊息輸入要搜尋的書籤關鍵字（輸入「取消」可中止）";
-pub const BMNOTE_PROMPT: &str = "📝 請回覆此訊息輸入：書籤 ID 備註內容（輸入「取消」可中止）";
-pub const BMTAG_PROMPT: &str = "🏷️ 請回覆此訊息輸入：書籤 ID 標籤1 標籤2（輸入「取消」可中止）";
-pub const BMDEL_PROMPT: &str = "🗑️ 請回覆此訊息輸入要刪除的書籤 ID（輸入「取消」可中止）";
-
 fn force_reply(placeholder: &str) -> ForceReply {
     ForceReply::new().input_field_placeholder(placeholder.to_owned())
 }
@@ -489,8 +483,8 @@ pub async fn handle_bm(bot: &Bot, msg: &Message, state: &BotState, payload: &str
     } else if let Some(url) = msg.reply_to_message().and_then(extract_url) {
         url
     } else {
-        bot.send_message(chat_id, BM_PROMPT)
-            .reply_markup(force_reply("https://example.com/article"))
+        bot.send_message(chat_id, lang.bm_prompt())
+            .reply_markup(force_reply(lang.bm_placeholder()))
             .await?;
         return Ok(());
     };
@@ -498,8 +492,8 @@ pub async fn handle_bm(bot: &Bot, msg: &Message, state: &BotState, payload: &str
     let url = match normalize_url(&raw) {
         Ok(url) => url,
         Err(_) => {
-            bot.send_message(chat_id, format!("{} 請重新貼上網址，或輸入「取消」。", lang.bm_invalid_url()))
-                .reply_markup(force_reply("https://example.com/article"))
+            bot.send_message(chat_id, lang.bm_invalid_url_retry())
+                .reply_markup(force_reply(lang.bm_placeholder()))
                 .await?;
             return Ok(());
         }
@@ -566,8 +560,8 @@ pub async fn handle_bmsearch(bot: &Bot, msg: &Message, state: &BotState, payload
     let lang = chat_lang(&state.repo, chat_id.0).await;
     let query = payload.trim();
     if query.is_empty() || query.chars().count() > 100 {
-        bot.send_message(chat_id, BMSEARCH_PROMPT)
-            .reply_markup(force_reply("關鍵字"))
+        bot.send_message(chat_id, lang.bm_search_prompt())
+            .reply_markup(force_reply(lang.bm_search_placeholder()))
             .await?;
         return Ok(());
     }
@@ -614,14 +608,14 @@ pub async fn handle_bmnote(bot: &Bot, msg: &Message, state: &BotState, payload: 
     let chat_id = msg.chat.id;
     let lang = chat_lang(&state.repo, chat_id.0).await;
     let Some((id_str, text)) = payload.trim().split_once(char::is_whitespace) else {
-        bot.send_message(chat_id, BMNOTE_PROMPT)
-            .reply_markup(force_reply("123 這篇很適合之後研究"))
+        bot.send_message(chat_id, lang.bm_note_prompt())
+            .reply_markup(force_reply(lang.bm_note_placeholder()))
             .await?;
         return Ok(());
     };
     let Ok(id) = id_str.parse::<i64>() else {
-        bot.send_message(chat_id, BMNOTE_PROMPT)
-            .reply_markup(force_reply("123 這篇很適合之後研究"))
+        bot.send_message(chat_id, lang.bm_note_prompt())
+            .reply_markup(force_reply(lang.bm_note_placeholder()))
             .await?;
         return Ok(());
     };
@@ -641,8 +635,8 @@ pub async fn handle_bmtag(bot: &Bot, msg: &Message, state: &BotState, payload: &
     let lang = chat_lang(&state.repo, chat_id.0).await;
     let mut parts = payload.split_whitespace();
     let Some(id) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
-        bot.send_message(chat_id, BMTAG_PROMPT)
-            .reply_markup(force_reply("123 AI 光通訊"))
+        bot.send_message(chat_id, lang.bm_tag_prompt())
+            .reply_markup(force_reply(lang.bm_tag_placeholder()))
             .await?;
         return Ok(());
     };
@@ -661,8 +655,8 @@ pub async fn handle_bmdel(bot: &Bot, msg: &Message, state: &BotState, payload: &
     let chat_id = msg.chat.id;
     let lang = chat_lang(&state.repo, chat_id.0).await;
     let Ok(id) = payload.trim().parse::<i64>() else {
-        bot.send_message(chat_id, BMDEL_PROMPT)
-            .reply_markup(force_reply("123"))
+        bot.send_message(chat_id, lang.bm_delete_prompt())
+            .reply_markup(force_reply(lang.bm_delete_placeholder()))
             .await?;
         return Ok(());
     };
