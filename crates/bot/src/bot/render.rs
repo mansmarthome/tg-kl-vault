@@ -170,6 +170,30 @@ fn push_preview(out: &mut String, preview_text: &str) {
     out.push_str("-----------------------------");
 }
 
+/// Packs lines into messages under `limit` characters, never splitting a line.
+/// A single line longer than the limit gets its own (over-limit) message rather
+/// than being silently truncated — better a rejected send than a lie. Shared by
+/// `/feedcheck` and the stock close reports, both of which build a `Vec<String>`
+/// of individual lines precisely so this can chunk them cleanly.
+pub(crate) fn chunk_lines(lines: &[String], limit: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for line in lines {
+        let extra = line.chars().count() + usize::from(!current.is_empty());
+        if !current.is_empty() && current.chars().count() + extra > limit {
+            out.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +333,24 @@ mod tests {
             render_feed_setting(&healthy),
             "\n訂閱<b>設定</b>\n[id] 7\n[標題] 標題\n[Link] https://example.com/feed\n[抓取更新] 抓取中\n[抓取頻率] 10分鐘\n[通知] 開啟\n[Telegraph] 關閉\n[Tag] 無\n[最後成功] 2小時前\n[最後錯誤] HTTP 404（3天前）\n"
         );
+    }
+
+    #[test]
+    fn chunk_lines_splits_without_cutting_a_line() {
+        let lines: Vec<String> = (0..50).map(|i| format!("line-{i:03}-{}", "x".repeat(20))).collect();
+        let chunks = chunk_lines(&lines, 100);
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(chunk.chars().count() <= 100, "chunk over limit: {}", chunk.chars().count());
+        }
+        assert_eq!(chunks.join("\n"), lines.join("\n"), "no content lost or reordered");
+    }
+
+    #[test]
+    fn an_overlong_single_line_gets_its_own_chunk_rather_than_truncation() {
+        let long = "y".repeat(200);
+        let chunks = chunk_lines(&["short".to_owned(), long.clone()], 100);
+        assert_eq!(chunks, vec!["short".to_owned(), long]);
     }
 
     #[test]

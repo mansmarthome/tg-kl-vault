@@ -61,6 +61,15 @@ pub async fn handle_callback(
         return handle_settings_callback(&bot, &query, &state, action, chat_id, message_id).await;
     }
 
+    // `stk:` before the legacy binary decoder, which is a hex parser that would
+    // happily mangle a `stk:` string.
+    if let Some(rest) = data.strip_prefix("stk:") {
+        return crate::bot::stocks::handle_stock_callback(
+            &bot, &query, &state, rest, chat_id, message_id,
+        )
+        .await;
+    }
+
     let callback = match decode_telebot_callback(data) {
         Ok(callback) => callback,
         Err(err) => {
@@ -270,6 +279,9 @@ async fn handle_settings_callback(
                 bot, query, state, action, chat_id, message_id,
             )
             .await
+        }
+        "stk" => {
+            crate::bot::stocks::handle_settings_stk(bot, query, state, chat_id, message_id).await
         }
         _ => respond_toast(bot, query, TOAST_UNKNOWN_ACTION).await,
     }

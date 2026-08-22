@@ -17,7 +17,7 @@ use teloxide::{prelude::*, types::ParseMode};
 
 use crate::{
     bot::{
-        render::humanize_ago,
+        render::{chunk_lines, humanize_ago},
         runtime::{no_preview, now_unix, to_request_error, BotState},
     },
     feed::{
@@ -300,28 +300,6 @@ fn render_report(probed: &[Probed], now: i64) -> Vec<String> {
     lines
 }
 
-/// Packs lines into messages under `limit` characters, never splitting a line.
-/// A single line longer than the limit gets its own (over-limit) message rather
-/// than being silently truncated — better a rejected send than a lie.
-fn chunk_lines(lines: &[String], limit: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for line in lines {
-        let extra = line.chars().count() + usize::from(!current.is_empty());
-        if !current.is_empty() && current.chars().count() + extra > limit {
-            out.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push('\n');
-        }
-        current.push_str(line);
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
-}
-
 /// Same minimal HTML escaping the rest of the bot uses for feed-derived text.
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
@@ -461,24 +439,6 @@ mod tests {
         assert!(text.contains("A &amp; B &lt;script&gt;"));
         assert!(text.contains("expected &lt;feed&gt; &amp; got"));
         assert!(!text.contains("<script>"));
-    }
-
-    #[test]
-    fn chunk_lines_splits_without_cutting_a_line() {
-        let lines: Vec<String> = (0..50).map(|i| format!("line-{i:03}-{}", "x".repeat(20))).collect();
-        let chunks = chunk_lines(&lines, 100);
-        assert!(chunks.len() > 1);
-        for chunk in &chunks {
-            assert!(chunk.chars().count() <= 100, "chunk over limit: {}", chunk.chars().count());
-        }
-        assert_eq!(chunks.join("\n"), lines.join("\n"), "no content lost or reordered");
-    }
-
-    #[test]
-    fn an_overlong_single_line_gets_its_own_chunk_rather_than_truncation() {
-        let long = "y".repeat(200);
-        let chunks = chunk_lines(&["short".to_owned(), long.clone()], 100);
-        assert_eq!(chunks, vec!["short".to_owned(), long]);
     }
 
     #[test]

@@ -11,4 +11,5 @@ pub mod pagination;
 pub mod render;
 pub mod runtime;
 pub mod sender;
+pub mod stocks;
 pub mod subscribe;

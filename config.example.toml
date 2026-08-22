@@ -75,3 +75,40 @@ cf_access_client_id     = ""          # optional Cloudflare Access service token
 cf_access_client_secret = ""
 timeout_seconds         = 240
 poll_interval_ms        = 1500
+
+# Stock tracking (台股 TWSE/TPEx + US). Manage a per-chat watchlist, query
+# quotes + technical indicators, and push a close-of-day report per market.
+# Every field has a FLOWERSS_STOCK_* env override.
+#
+# The market clock (which day is a trading day, when the bell rings) is read
+# entirely from Yahoo's per-response session data, so there is no timezone
+# database and no hard-coded holiday calendar to maintain.
+#
+# IMPORTANT (Turso): the close-report dedup is per-instance plus a DB ledger.
+# Under TURSO_DATABASE_URL the embedded replica reads can lag ~60s, so run only
+# ONE instance or two may each send the daily report inside that sync window.
+[stock]
+enabled                  = true
+poll_seconds             = 60         # worker tick; a pass with no due chat is free
+history_days             = 180        # bars fetched for indicators
+cache_ttl_seconds        = 60
+max_symbols_per_chat     = 50
+max_symbols_global       = 300        # distinct symbols across all chats
+watchlist_page_size      = 8
+default_delay_minutes_tw = 60         # push this long after the TW close if no explicit time
+default_delay_minutes_us = 90
+late_threshold_minutes   = 30         # a report later than this is flagged "delayed"
+tw_probe_symbol          = "2330.TW"  # probed every pass so market state never needs a watchlist
+us_probe_symbol          = "AAPL"
+yahoo_endpoint           = "https://query1.finance.yahoo.com"
+twse_endpoint            = "https://openapi.twse.com.tw/v1"
+tpex_endpoint            = "https://www.tpex.org.tw/openapi/v1"
+
+# AI commentary reuses the [bookmark.ai.mcp] bridge above — no separate
+# credentials. It is off by default; the numbers always render without it. The
+# daily quota is metered separately from bookmark tagging so a chatty watchlist
+# can't exhaust the tagging budget (and vice versa).
+ai_commentary            = false
+ai_daily_quota           = 20         # MCP calls/day for stock commentary
+ai_max_symbols           = 3          # symbols per batch prompt (not calls)
+ai_report_timeout_seconds = 90        # < mcp.timeout_seconds so a slow turn can't stall the tick

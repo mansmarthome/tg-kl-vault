@@ -120,6 +120,52 @@ strings! {
     bm_summary_failed => en: "Summary failed.", zh: "摘要失敗。";
     bm_summary_unavailable => en: "AI summary is not configured.", zh: "尚未設定 AI 摘要。";
     bm_summary_heading => en: "📝 <b>Summary</b>", zh: "📝 <b>摘要</b>";
+
+    // ── Stock tracking (render-facing) ─────────────────────────────────────
+    stk_vol => en: "Vol", zh: "量";
+    stk_week52 => en: "52w", zh: "52週";
+    stk_macd_hist => en: "hist", zh: "柱";
+    stk_insufficient => en: "Not enough history for indicators yet.", zh: "歷史資料不足，暫無技術指標。";
+    stk_indicators_unavailable => en: "Indicators unavailable (history not updated).", zh: "技術指標暫不可用（歷史資料未更新）。";
+    stk_stale => en: "⚠️ cached data", zh: "⚠️ 快取資料";
+    stk_delayed => en: "⏰ delayed", zh: "⏰ 延遲送出";
+    stk_empty => en: "No stocks tracked yet. Use /stockadd <symbol>.", zh: "還沒有追蹤任何股票。使用 /stockadd <代號>。";
+    stk_ai_disclaimer => en: "For reference only; not investment advice.", zh: "以上僅供參考，不構成投資建議。";
+
+    // ── Stock tracking (commands / callbacks / settings) ───────────────────
+    stk_settings_button => en: "📈 Stocks", zh: "📈 股票";
+    stk_add_button => en: "➕ Track", zh: "➕ 加入追蹤";
+    stk_added => en: "➕ Added to your watchlist.", zh: "➕ 已加入自選股。";
+    stk_already => en: "Already in your watchlist.", zh: "已在自選股清單中。";
+    stk_unknown_symbol => en: "Symbol not found. Check the code and try again.", zh: "找不到這個代號，請確認後再試。";
+    stk_upstream => en: "Data source is unavailable right now. Try again later.", zh: "資料來源暫時無法使用，請稍後再試。";
+    stk_removed => en: "🗑 Removed from your watchlist.", zh: "🗑 已從自選股移除。";
+    stk_not_found => en: "Not in your watchlist.", zh: "不在你的自選股清單中。";
+    stk_no_permission => en: "You can't do that here.", zh: "你沒有權限這麼做。";
+    stk_bad_action => en: "Unknown action.", zh: "未知的操作。";
+    stk_stock_usage => en: "Usage: /stock <symbol> (e.g. 2330, AAPL).", zh: "用法：/stock <代號>（例如 2330、AAPL）。";
+    stk_add_usage => en: "Usage: /stockadd <symbol> (e.g. 2330, 6488, AAPL).", zh: "用法：/stockadd <代號>（例如 2330、6488、AAPL）。";
+    stk_del_usage => en: "Usage: /stockdel <id or symbol>.", zh: "用法：/stockdel <編號或代號>。";
+    stk_delete_confirm => en: "Remove this stock from the watchlist?", zh: "確定要從自選股移除這檔股票嗎？";
+    stk_confirm_delete => en: "Confirm remove", zh: "確認移除";
+    stk_prompt => en: "📈 Reply with a stock symbol to look up (type \"cancel\" to stop)", zh: "📈 請回覆此訊息輸入要查詢的股票代號（輸入「取消」可中止）";
+    stk_placeholder => en: "2330 or AAPL", zh: "2330 或 AAPL";
+    stk_add_prompt => en: "➕ Reply with a stock symbol to track (type \"cancel\" to stop)", zh: "➕ 請回覆此訊息輸入要追蹤的股票代號（輸入「取消」可中止）";
+    stk_del_prompt => en: "🗑️ Reply with the id or symbol to remove (type \"cancel\" to stop)", zh: "🗑️ 請回覆此訊息輸入要移除的編號或代號（輸入「取消」可中止）";
+    stk_push_time_tw_prompt => en: "🇹🇼 Reply with the TW close-push time HH:MM, or \"off\" (type \"cancel\" to stop)", zh: "🇹🇼 請回覆此訊息輸入台股收盤推播時間 HH:MM，或「off」關閉（輸入「取消」可中止）";
+    stk_push_time_us_prompt => en: "🇺🇸 Reply with the US close-push time HH:MM, or \"off\" (type \"cancel\" to stop)", zh: "🇺🇸 請回覆此訊息輸入美股收盤推播時間 HH:MM，或「off」關閉（輸入「取消」可中止）";
+    stk_push_time_placeholder => en: "14:00 or off", zh: "14:00 或 off";
+    stk_push_title => en: "📈 <b>Close-push settings</b>\nTap a market to toggle, or set a time.", zh: "📈 <b>收盤推播設定</b>\n點市場可切換開關，或設定推播時間。";
+    stk_push_saved => en: "Saved.", zh: "已儲存。";
+    stk_push_bad_time => en: "Use HH:MM (00:00–23:59) or \"off\".", zh: "請輸入 HH:MM（00:00–23:59）或「off」。";
+    stk_push_time_default => en: "after close", zh: "收盤後";
+    stk_report_working => en: "📈 Generating today's close report…", zh: "📈 開始產生今日收盤報告…";
+    stk_report_already => en: "Today's report has already been sent.", zh: "今日報告已經送出過了。";
+    stk_ai_button => en: "🤖 AI read", zh: "🤖 AI 解讀";
+    stk_ai_working => en: "🤖 Generating AI commentary…", zh: "🤖 產生 AI 解讀中…";
+    stk_ai_unavailable => en: "AI commentary is not configured.", zh: "尚未設定 AI 解讀。";
+    stk_ai_failed => en: "AI commentary failed.", zh: "AI 解讀失敗。";
+    stk_ai_heading => en: "🤖 <b>AI commentary</b>", zh: "🤖 <b>AI 解讀</b>";
 }
 
 impl Lang {
@@ -184,6 +230,135 @@ impl Lang {
             (Self::En, false) => "off",
             (Self::ZhTw, true) => "開",
             (Self::ZhTw, false) => "關",
+        }
+    }
+
+    pub fn stk_market_name(self, market: crate::stock::Market) -> &'static str {
+        use crate::stock::Market::{Tw, Us};
+        match (self, market) {
+            (Self::En, Tw) => "TW",
+            (Self::En, Us) => "US",
+            (Self::ZhTw, Tw) => "台股",
+            (Self::ZhTw, Us) => "美股",
+        }
+    }
+
+    pub fn stk_scope_name(self, scope: crate::stock::MarketScope) -> &'static str {
+        use crate::stock::MarketScope::{All, Tw, Us};
+        match (self, scope) {
+            (Self::En, All) => "All",
+            (Self::ZhTw, All) => "全部",
+            (_, Tw) => self.stk_market_name(crate::stock::Market::Tw),
+            (_, Us) => self.stk_market_name(crate::stock::Market::Us),
+        }
+    }
+
+    /// A detected signal as a short, emoji-prefixed label. Kept here (not in
+    /// render.rs) so both languages stay side by side per the one-string-one-
+    /// method convention.
+    pub fn stk_signal(self, sig: crate::stock::Signal) -> &'static str {
+        use crate::stock::Signal::*;
+        match (self, sig) {
+            (Self::En, MaGoldenCross) => "⭐ MA golden cross",
+            (Self::En, MaDeadCross) => "⚠️ MA death cross",
+            (Self::En, KdGoldenCross) => "⭐ KD golden cross",
+            (Self::En, KdDeadCross) => "⚠️ KD death cross",
+            (Self::En, MacdGoldenCross) => "⭐ MACD golden cross",
+            (Self::En, MacdDeadCross) => "⚠️ MACD death cross",
+            (Self::En, BollBreakUpper) => "📈 broke above upper Bollinger",
+            (Self::En, BollBreakLower) => "📉 broke below lower Bollinger",
+            (Self::En, RsiOverbought) => "🔴 RSI overbought (>70)",
+            (Self::En, RsiOversold) => "🟢 RSI oversold (<30)",
+            (Self::ZhTw, MaGoldenCross) => "⭐ 均線黃金交叉",
+            (Self::ZhTw, MaDeadCross) => "⚠️ 均線死亡交叉",
+            (Self::ZhTw, KdGoldenCross) => "⭐ KD 黃金交叉",
+            (Self::ZhTw, KdDeadCross) => "⚠️ KD 死亡交叉",
+            (Self::ZhTw, MacdGoldenCross) => "⭐ MACD 黃金交叉",
+            (Self::ZhTw, MacdDeadCross) => "⚠️ MACD 死亡交叉",
+            (Self::ZhTw, BollBreakUpper) => "📈 突破布林上軌",
+            (Self::ZhTw, BollBreakLower) => "📉 跌破布林下軌",
+            (Self::ZhTw, RsiOverbought) => "🔴 RSI 超買 (>70)",
+            (Self::ZhTw, RsiOversold) => "🟢 RSI 超賣 (<30)",
+        }
+    }
+
+    /// Daily close-report header, e.g. "📈 台股收盤報告 · 2026-08-21 · 5 檔".
+    pub fn stk_report_header(self, market: crate::stock::Market, date: &str, count: usize) -> String {
+        let name = self.stk_market_name(market);
+        match self {
+            Self::En => format!("📈 {name} close report · {date} · {count} symbols"),
+            Self::ZhTw => format!("📈 {name}收盤報告 · {date} · {count} 檔"),
+        }
+    }
+
+    pub fn stk_report_overflow(self, more: usize) -> String {
+        match self {
+            Self::En => format!("…and {more} more, see /stocks"),
+            Self::ZhTw => format!("…及其他 {more} 檔，見 /stocks"),
+        }
+    }
+
+    pub fn stk_report_not_closed(self, market: crate::stock::Market) -> String {
+        let name = self.stk_market_name(market);
+        match self {
+            Self::En => format!("The {name} market hasn't closed yet — try again after the close."),
+            Self::ZhTw => format!("{name}尚未收盤，請於收盤後再試。"),
+        }
+    }
+
+    pub fn stk_limit_chat(self, max: u32) -> String {
+        match self {
+            Self::En => format!("Watchlist is full ({max} max). Remove one first."),
+            Self::ZhTw => format!("自選股已達上限（{max} 檔），請先移除一檔。"),
+        }
+    }
+
+    pub fn stk_limit_global(self, max: u32) -> String {
+        match self {
+            Self::En => format!("The global symbol limit ({max}) is reached; try again later."),
+            Self::ZhTw => format!("已達全域追蹤上限（{max} 檔），請稍後再試。"),
+        }
+    }
+
+    /// Per-market enable toggle button, e.g. "🇹🇼 台股：開".
+    pub fn stk_push_toggle(self, market: crate::stock::Market, on: bool) -> String {
+        let name = self.stk_market_name(market);
+        let state = self.on_off(on);
+        format!("{} {name}：{state}", self.stk_market_flag(market))
+    }
+
+    /// Per-market time button, e.g. "🇹🇼 時間：14:00".
+    pub fn stk_push_time_button(self, market: crate::stock::Market, time: &str) -> String {
+        let flag = self.stk_market_flag(market);
+        match self {
+            Self::En => format!("{flag} time: {time}"),
+            Self::ZhTw => format!("{flag} 時間：{time}"),
+        }
+    }
+
+    fn stk_market_flag(self, market: crate::stock::Market) -> &'static str {
+        match market {
+            crate::stock::Market::Tw => "🇹🇼",
+            crate::stock::Market::Us => "🇺🇸",
+        }
+    }
+
+    /// Watchlist page header line.
+    pub fn stk_list_header(
+        self,
+        scope: crate::stock::MarketScope,
+        total: usize,
+        page: usize,
+        pages: usize,
+    ) -> String {
+        let scope_name = self.stk_scope_name(scope);
+        match self {
+            Self::En => {
+                format!("📈 <b>Watchlist</b> ({scope_name}) · {total} total · page {page}/{pages}")
+            }
+            Self::ZhTw => {
+                format!("📈 <b>自選股</b>（{scope_name}）· 共 {total} 檔 · 第 {page}/{pages} 頁")
+            }
         }
     }
 }

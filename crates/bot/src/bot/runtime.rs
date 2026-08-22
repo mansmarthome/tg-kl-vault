@@ -18,6 +18,7 @@ use crate::{
         feedcheck,
         keyboard::{feed_item_list_keyboard, settings_keyboard, unsuball_confirm_keyboard},
         sender::TeloxideSender,
+        stocks,
         subscribe::create_source,
     },
     config::Config,
@@ -39,6 +40,9 @@ pub struct BotState {
     pub repo: Repo,
     pub config: Config,
     pub fetcher: Fetcher,
+    /// Shared with the stock worker so the rate limiter / 429 cooldown / hard
+    /// lock and the interactive path see the same state.
+    pub stock: Arc<crate::bot::stocks::StockSvc>,
 }
 
 /// Runs the Telegram long-polling dispatcher until `shutdown` fires, then
@@ -49,6 +53,7 @@ pub async fn run_bot(
     config: Config,
     repo: Repo,
     fetcher: Fetcher,
+    stock: Arc<crate::bot::stocks::StockSvc>,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     // Registered menu = the derive-generated list, minus deliberately hidden
@@ -65,6 +70,7 @@ pub async fn run_bot(
         repo,
         config,
         fetcher,
+        stock,
     });
 
     let handler = dptree::entry()
@@ -150,6 +156,18 @@ async fn handle_command(
         Command::Bmdel(payload) => {
             bookmarks::handle_bmdel(&bot, &msg, &state, payload.trim()).await?
         }
+        Command::Stock(payload) => stocks::handle_stock(&bot, &msg, &state, payload.trim()).await?,
+        Command::Stocks => stocks::handle_stocks(&bot, &msg, &state).await?,
+        Command::Stockadd(payload) => {
+            stocks::handle_stockadd(&bot, &msg, &state, payload.trim()).await?
+        }
+        Command::Stockpush(payload) => {
+            stocks::handle_stockpush(&bot, &msg, &state, payload.trim()).await?
+        }
+        Command::Stockreport => stocks::handle_stockreport(&bot, &msg, &state).await?,
+        Command::Stockdel(payload) => {
+            stocks::handle_stockdel(&bot, &msg, &state, payload.trim()).await?
+        }
     }
     Ok(())
 }
@@ -193,6 +211,16 @@ enum PromptKind {
     BmNote,
     BmTag,
     BmDel,
+    Stock,
+    StockAdd,
+    StockDel,
+    // Reply routing is stateless — the only state a reply carries is the text
+    // of the message it replied to. So "set the push time" can't be one prompt
+    // with a market argument; it must be two distinct prompt strings mapping to
+    // two kinds. Any attempt to stash "which market" in a side table would
+    // reintroduce the per-chat prompt state this design deletes.
+    StockPushTimeTw,
+    StockPushTimeUs,
 }
 
 fn prompt_kind(text: &str) -> Option<PromptKind> {
@@ -217,6 +245,21 @@ fn prompt_kind(text: &str) -> Option<PromptKind> {
         }
         if text == lang.bm_delete_prompt() {
             return Some(PromptKind::BmDel);
+        }
+        if text == lang.stk_prompt() {
+            return Some(PromptKind::Stock);
+        }
+        if text == lang.stk_add_prompt() {
+            return Some(PromptKind::StockAdd);
+        }
+        if text == lang.stk_del_prompt() {
+            return Some(PromptKind::StockDel);
+        }
+        if text == lang.stk_push_time_tw_prompt() {
+            return Some(PromptKind::StockPushTimeTw);
+        }
+        if text == lang.stk_push_time_us_prompt() {
+            return Some(PromptKind::StockPushTimeUs);
         }
     }
     None
@@ -246,6 +289,15 @@ async fn handle_prompt_reply(bot: Bot, msg: Message, state: Arc<BotState>) -> Re
         PromptKind::BmNote => bookmarks::handle_bmnote(&bot, &msg, &state, &payload).await?,
         PromptKind::BmTag => bookmarks::handle_bmtag(&bot, &msg, &state, &payload).await?,
         PromptKind::BmDel => bookmarks::handle_bmdel(&bot, &msg, &state, &payload).await?,
+        PromptKind::Stock => stocks::handle_stock(&bot, &msg, &state, &payload).await?,
+        PromptKind::StockAdd => stocks::handle_stockadd(&bot, &msg, &state, &payload).await?,
+        PromptKind::StockDel => stocks::handle_stockdel(&bot, &msg, &state, &payload).await?,
+        PromptKind::StockPushTimeTw => {
+            stocks::handle_push_time_reply(&bot, &msg, &state, crate::stock::Market::Tw, &payload).await?
+        }
+        PromptKind::StockPushTimeUs => {
+            stocks::handle_push_time_reply(&bot, &msg, &state, crate::stock::Market::Us, &payload).await?
+        }
     }
     Ok(())
 }
@@ -844,4 +896,39 @@ pub(crate) fn to_request_error(
     err: impl std::error::Error + Send + Sync + 'static,
 ) -> teloxide::RequestError {
     teloxide::RequestError::Io(std::sync::Arc::new(std::io::Error::other(err)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reply routing is stateless: a reply is matched back to a `PromptKind`
+    /// purely by the text of the message it replied to. So every prompt string
+    /// must map to *some* kind, and no two prompts (in either language) may
+    /// share text — a copy-pasted prompt would silently misroute replies to the
+    /// wrong handler. This guards a gap the other tests didn't cover.
+    #[test]
+    fn every_prompt_string_maps_to_exactly_one_prompt_kind() {
+        let mut seen = std::collections::HashSet::new();
+        for lang in [Lang::En, Lang::ZhTw] {
+            let prompts = [
+                lang.sub_prompt(),
+                lang.setfeedtag_prompt(),
+                lang.bm_prompt(),
+                lang.bm_search_prompt(),
+                lang.bm_note_prompt(),
+                lang.bm_tag_prompt(),
+                lang.bm_delete_prompt(),
+                lang.stk_prompt(),
+                lang.stk_add_prompt(),
+                lang.stk_del_prompt(),
+                lang.stk_push_time_tw_prompt(),
+                lang.stk_push_time_us_prompt(),
+            ];
+            for p in prompts {
+                assert!(prompt_kind(p).is_some(), "prompt not routed: {p:?}");
+                assert!(seen.insert(p.to_owned()), "duplicate prompt text misroutes: {p:?}");
+            }
+        }
+    }
 }

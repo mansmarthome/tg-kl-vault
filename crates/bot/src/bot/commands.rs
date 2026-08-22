@@ -51,6 +51,20 @@ pub enum Command {
     // Feed health — appended after bookmarks, same frozen-prefix rule.
     #[command(description = "檢查訂閱的 feed 是否還有效")]
     Feedcheck,
+    // Stock tracking — appended after feedcheck, same frozen-prefix rule.
+    #[command(description = "查詢股票報價與技術指標")]
+    Stock(String),
+    #[command(description = "查看自選股清單")]
+    Stocks,
+    #[command(description = "加入自選股")]
+    Stockadd(String),
+    #[command(description = "設定收盤推播")]
+    Stockpush(String),
+    #[command(description = "立刻產生今日收盤報告")]
+    Stockreport,
+    // Hidden: the real delete UI is the 🗑 button; this is for power users.
+    #[command(description = "")]
+    Stockdel(String),
 }
 
 /// The 14 command *names* the Go version shipped, frozen as a Go-parity golden:
@@ -106,5 +120,23 @@ mod tests {
             assert_eq!(derived[i].0, *name, "command name drift at index {i}");
             assert_eq!(derived[i].1, *desc, "command description drift at index {i}");
         }
+    }
+
+    /// Stock commands are appended after feedcheck (which is itself after the
+    /// frozen set and bookmarks). Pins the tail order so a future insert can't
+    /// silently shift them.
+    #[test]
+    fn stock_commands_are_appended_after_feedcheck() {
+        let names: Vec<String> = Command::bot_commands()
+            .into_iter()
+            .map(|c| c.command.trim_start_matches('/').to_string())
+            .collect();
+        let pos = |name: &str| names.iter().position(|n| n == name).unwrap();
+        assert!(pos("feedcheck") < pos("stock"));
+        assert!(pos("stock") < pos("stocks"));
+        assert!(pos("stocks") < pos("stockadd"));
+        assert!(pos("stockadd") < pos("stockpush"));
+        assert!(pos("stockpush") < pos("stockreport"));
+        assert!(pos("stockreport") < pos("stockdel"));
     }
 }

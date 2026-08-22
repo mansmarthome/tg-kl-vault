@@ -1,6 +1,7 @@
 pub mod bookmarks;
 pub mod models;
 pub mod repo;
+pub mod stocks;
 
 use std::{
     collections::HashSet,
@@ -199,6 +200,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("../../../../migrations/0003_options_unique_name.sql")),
     (4, include_str!("../../../../migrations/0004_bookmarks.sql")),
     (5, include_str!("../../../../migrations/0005_source_health.sql")),
+    (6, include_str!("../../../../migrations/0006_stocks.sql")),
 ];
 
 async fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
@@ -340,6 +342,62 @@ mod tests {
             assert_eq!(row.get::<Option<String>>(2).unwrap(), None);
             assert_eq!(row.get::<Option<i64>>(3).unwrap(), None);
             assert!(rows.next().await.unwrap().is_none(), "no rows duplicated");
+        }
+    }
+
+    /// A database predating migration 0006 must gain the stock tables on open,
+    /// exactly once — opening twice must not error (a second `CREATE TABLE`
+    /// without `IF NOT EXISTS` would, so this also guards that the SQL is
+    /// re-runnable) and must preserve any rows written between opens.
+    #[tokio::test]
+    async fn legacy_database_gains_the_stock_tables_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let path = db_path.to_str().unwrap();
+
+        // Stand up a pre-0006 database: drop the stock tables and un-record 6.
+        {
+            let db = connect(path).await.unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE stock_watchlist; DROP TABLE stock_meta; \
+                     DROP TABLE stock_bars; DROP TABLE stock_push_settings; \
+                     DROP TABLE stock_report_log; DROP TABLE stock_commentary; \
+                     DELETE FROM _kl_migrations WHERE version = 6;",
+                )
+                .await
+                .unwrap();
+        }
+
+        // First reopen applies 0006 and lets us insert a row.
+        {
+            let db = connect(path).await.unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO stock_watchlist \
+                     (chat_id, created_by, symbol, market, created_at, updated_at) \
+                     VALUES (1, 1, '2330.TW', 'tw', 0, 0)",
+                    (),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Second reopen must be a no-op that keeps the row.
+        {
+            let db = connect(path).await.unwrap();
+            let n: i64 = db
+                .conn
+                .query("SELECT COUNT(*) FROM stock_watchlist", ())
+                .await
+                .unwrap()
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .get(0)
+                .unwrap();
+            assert_eq!(n, 1, "the row must survive the second open");
         }
     }
 }

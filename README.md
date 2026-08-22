@@ -13,6 +13,7 @@ This repository is a Rust rewrite derived from the original [`indes/flowerss-bot
 - Inline buttons for subscription settings and unsubscribe flows.
 - SOCKS5 proxy support for feed fetching.
 - Optional custom Telegram Bot API endpoint.
+- Stock tracking (台股 TWSE/TPEx + US): per-chat watchlist, quotes with technical indicators, and a per-market close-of-day push report with optional AI commentary.
 - Docker / Docker Compose deployment.
 - Runtime configuration through TOML and environment variables.
 
@@ -225,6 +226,25 @@ Every config value can be supplied through environment variables with the `FLOWE
 | `FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_SECRET` | `bookmark.ai.mcp.cf_access_client_secret` | (Cloudflare Access) |
 | `FLOWERSS_BOOKMARK_AI_MCP_TIMEOUT_SECONDS` | `bookmark.ai.mcp.timeout_seconds` | `240` |
 | `FLOWERSS_BOOKMARK_AI_MCP_POLL_INTERVAL_MS` | `bookmark.ai.mcp.poll_interval_ms` | `1500` |
+| `FLOWERSS_STOCK_ENABLED` | `stock.enabled` | `true` |
+| `FLOWERSS_STOCK_POLL_SECONDS` | `stock.poll_seconds` | `60` |
+| `FLOWERSS_STOCK_HISTORY_DAYS` | `stock.history_days` | `180` |
+| `FLOWERSS_STOCK_CACHE_TTL_SECONDS` | `stock.cache_ttl_seconds` | `60` |
+| `FLOWERSS_STOCK_MAX_SYMBOLS_PER_CHAT` | `stock.max_symbols_per_chat` | `50` |
+| `FLOWERSS_STOCK_MAX_SYMBOLS_GLOBAL` | `stock.max_symbols_global` | `300` |
+| `FLOWERSS_STOCK_WATCHLIST_PAGE_SIZE` | `stock.watchlist_page_size` | `8` |
+| `FLOWERSS_STOCK_DEFAULT_DELAY_MINUTES_TW` | `stock.default_delay_minutes_tw` | `60` |
+| `FLOWERSS_STOCK_DEFAULT_DELAY_MINUTES_US` | `stock.default_delay_minutes_us` | `90` |
+| `FLOWERSS_STOCK_LATE_THRESHOLD_MINUTES` | `stock.late_threshold_minutes` | `30` |
+| `FLOWERSS_STOCK_TW_PROBE_SYMBOL` | `stock.tw_probe_symbol` | `2330.TW` |
+| `FLOWERSS_STOCK_US_PROBE_SYMBOL` | `stock.us_probe_symbol` | `AAPL` |
+| `FLOWERSS_STOCK_YAHOO_ENDPOINT` | `stock.yahoo_endpoint` | `https://query1.finance.yahoo.com` |
+| `FLOWERSS_STOCK_TWSE_ENDPOINT` | `stock.twse_endpoint` | `https://openapi.twse.com.tw/v1` |
+| `FLOWERSS_STOCK_TPEX_ENDPOINT` | `stock.tpex_endpoint` | `https://www.tpex.org.tw/openapi/v1` |
+| `FLOWERSS_STOCK_AI_COMMENTARY` | `stock.ai_commentary` | `false` |
+| `FLOWERSS_STOCK_AI_DAILY_QUOTA` | `stock.ai_daily_quota` | `20` |
+| `FLOWERSS_STOCK_AI_MAX_SYMBOLS` | `stock.ai_max_symbols` | `3` |
+| `FLOWERSS_STOCK_AI_REPORT_TIMEOUT_SECONDS` | `stock.ai_report_timeout_seconds` | `90` |
 
 List values accept comma-separated values. Bracketed forms also work, for example `FLOWERSS_ALLOWED_USERS="[123,-100]"`.
 

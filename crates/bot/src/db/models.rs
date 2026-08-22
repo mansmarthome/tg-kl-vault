@@ -179,6 +179,145 @@ impl FromRow for BookmarkTag {
     }
 }
 
+/// One watched stock for a chat (migration 0006). `display_name`/`currency`/
+/// `exchange` are snapshots taken at add time so the list still renders when
+/// Yahoo is unavailable. No floats, so `Eq` holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchItem {
+    pub id: i64,
+    pub chat_id: i64,
+    pub created_by: i64,
+    pub symbol: String,
+    pub market: String,
+    pub exchange: String,
+    pub display_name: String,
+    pub currency: String,
+    pub note: String,
+    pub sort_order: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl FromRow for WatchItem {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            chat_id: row.get(1)?,
+            created_by: row.get(2)?,
+            symbol: row.get(3)?,
+            market: row.get(4)?,
+            exchange: row.get(5)?,
+            display_name: row.get(6)?,
+            currency: row.get(7)?,
+            note: row.get(8)?,
+            sort_order: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
+        })
+    }
+}
+
+/// Per-symbol meta / session-clock cache row. Carries `f64` prices, so no `Eq`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StockMeta {
+    pub symbol: String,
+    pub market: String,
+    pub exchange: String,
+    pub display_name: String,
+    pub currency: String,
+    pub gmtoffset: i64,
+    pub session_start: Option<i64>,
+    pub session_end: Option<i64>,
+    pub market_time: Option<i64>,
+    pub last_price: Option<f64>,
+    pub prev_close: Option<f64>,
+    pub week52_high: Option<f64>,
+    pub week52_low: Option<f64>,
+    pub trade_date: String,
+    pub source: String,
+    pub fetched_at: i64,
+    pub updated_at: i64,
+}
+
+impl FromRow for StockMeta {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            symbol: row.get(0)?,
+            market: row.get(1)?,
+            exchange: row.get(2)?,
+            display_name: row.get(3)?,
+            currency: row.get(4)?,
+            gmtoffset: row.get(5)?,
+            session_start: row.get(6)?,
+            session_end: row.get(7)?,
+            market_time: row.get(8)?,
+            last_price: row.get(9)?,
+            prev_close: row.get(10)?,
+            week52_high: row.get(11)?,
+            week52_low: row.get(12)?,
+            trade_date: row.get(13)?,
+            source: row.get(14)?,
+            fetched_at: row.get(15)?,
+            updated_at: row.get(16)?,
+        })
+    }
+}
+
+/// One OHLCV bar as stored (migration 0006). Carries `f64` prices, so no `Eq`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StockBar {
+    pub symbol: String,
+    pub trade_date: String,
+    pub ts: i64,
+    pub open: Option<f64>,
+    pub high: Option<f64>,
+    pub low: Option<f64>,
+    pub close: Option<f64>,
+    pub volume: Option<i64>,
+    pub source: String,
+    pub updated_at: i64,
+}
+
+impl FromRow for StockBar {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            symbol: row.get(0)?,
+            trade_date: row.get(1)?,
+            ts: row.get(2)?,
+            open: row.get(3)?,
+            high: row.get(4)?,
+            low: row.get(5)?,
+            close: row.get(6)?,
+            volume: row.get(7)?,
+            source: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
+    }
+}
+
+/// Per-chat, per-market close-push setting. `push_minute` is minutes from
+/// market-local midnight; `None` means "default delay after the close".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushSetting {
+    pub chat_id: i64,
+    pub market: String,
+    pub enabled: i64,
+    pub push_minute: Option<i64>,
+    pub updated_at: i64,
+}
+
+impl FromRow for PushSetting {
+    fn from_row(row: &Row) -> libsql::Result<Self> {
+        Ok(Self {
+            chat_id: row.get(0)?,
+            market: row.get(1)?,
+            enabled: row.get(2)?,
+            push_minute: row.get(3)?,
+            updated_at: row.get(4)?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionRow {
     pub id: i64,

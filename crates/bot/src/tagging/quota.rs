@@ -26,9 +26,17 @@ fn parse(value: &str) -> (String, u32) {
 /// Attempts to consume one unit of today's budget. Returns `true` if allowed
 /// (and records the consumption), `false` if today's soft quota is exhausted.
 pub async fn try_consume(repo: &Repo, daily_quota: u32) -> anyhow::Result<bool> {
+    try_consume_key(repo, QUOTA_KEY, daily_quota).await
+}
+
+/// Generalization of [`try_consume`] over the options key, so a second daily
+/// budget can be metered independently. The stock feature uses this with its own
+/// key so a chatty watchlist can't starve bookmark tagging (both hit the same
+/// MCP bridge, but each has its own counter).
+pub async fn try_consume_key(repo: &Repo, key: &str, daily_quota: u32) -> anyhow::Result<bool> {
     let today = today();
     let (date, count) = repo
-        .get_option(QUOTA_KEY)
+        .get_option(key)
         .await?
         .map(|v| parse(&v))
         .unwrap_or_default();
@@ -36,7 +44,7 @@ pub async fn try_consume(repo: &Repo, daily_quota: u32) -> anyhow::Result<bool> 
     if current >= daily_quota {
         return Ok(false);
     }
-    repo.set_option(QUOTA_KEY, &format!("{today}:{}", current + 1))
+    repo.set_option(key, &format!("{today}:{}", current + 1))
         .await?;
     Ok(true)
 }
@@ -62,5 +70,14 @@ mod tests {
         // The counter is a single row, not one-per-call.
         let stored = repo.get_option(QUOTA_KEY).await.unwrap().unwrap();
         assert!(stored.ends_with(":2"));
+    }
+
+    #[tokio::test]
+    async fn separate_keys_meter_independently() {
+        let repo = repo().await;
+        // Exhaust one key; the other is untouched.
+        assert!(try_consume_key(&repo, "k:a", 1).await.unwrap());
+        assert!(!try_consume_key(&repo, "k:a", 1).await.unwrap());
+        assert!(try_consume_key(&repo, "k:b", 1).await.unwrap());
     }
 }

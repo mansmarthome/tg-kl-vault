@@ -38,3 +38,35 @@ pub async fn spawn_single_response_server_with(
     });
     format!("http://{addr}/feed")
 }
+
+/// Serves a scripted sequence of JSON responses, one per incoming connection,
+/// in order. Needed by the stock source tests, where a single logical
+/// operation makes several requests (e.g. the two-stage TWSE/TPEx probe) and
+/// each must get a distinct reply. `Connection: close` forces one request per
+/// connection so reqwest keep-alive can't collapse them. Returns the base URL
+/// (no trailing slash); the caller appends the path.
+pub async fn spawn_scripted_server(responses: Vec<(u16, &'static str)>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for (status, body) in responses {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                if n == 0 || buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        }
+    });
+    format!("http://{addr}")
+}

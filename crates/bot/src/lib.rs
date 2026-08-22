@@ -8,6 +8,7 @@ pub mod opml;
 pub mod preview;
 pub mod ratelimit;
 pub mod scheduler;
+pub mod stock;
 pub mod tagging;
 
 #[cfg(test)]

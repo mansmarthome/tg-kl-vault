@@ -215,13 +215,18 @@ impl Repo {
     }
 
     pub async fn insert_source(&self, link: &str, title: &str) -> DbResult<i64> {
-        self.exec(
+        // `RETURNING id` rather than `last_insert_rowid()`: libsql is a single
+        // shared connection, and now that a fourth writer (the stock worker)
+        // runs concurrently, a `last_insert_rowid()` read could observe another
+        // task's insert. `RETURNING` binds the id to this statement — the same
+        // reasoning db/bookmarks.rs already documents for its upsert.
+        self.scalar_i64(
             "INSERT INTO sources (link, title, error_count, created_at, updated_at, next_fetch_at) \
-             VALUES (?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
+             VALUES (?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0) \
+             RETURNING id",
             libsql::params![link, title],
         )
-        .await?;
-        Ok(self.conn().last_insert_rowid())
+        .await
     }
 
     pub async fn sources_due(&self, now: i64, limit: i64) -> DbResult<Vec<Source>> {

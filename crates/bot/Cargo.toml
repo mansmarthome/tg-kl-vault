@@ -16,6 +16,7 @@ quick-xml = { version = "0.41.0", features = ["serialize"] }
 reqwest = { version = "0.12", default-features = false, features = ["socks", "gzip", "brotli", "rustls-tls", "stream", "json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+thiserror.workspace = true
 teloxide = { version = "0.17.0", default-features = false, features = ["macros", "ctrlc_handler", "rustls"] }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true

@@ -116,6 +116,10 @@ pub fn settings_keyboard(lang: Lang) -> InlineKeyboardMarkup {
             lang.bm_settings_button(),
             "settings:bm",
         )],
+        vec![InlineKeyboardButton::callback(
+            lang.stk_settings_button(),
+            "settings:stk",
+        )],
     ])
 }
 

@@ -32,6 +32,7 @@ pub struct Config {
     pub log: LogConfig,
     pub fetch: FetchConfig,
     pub bookmark: BookmarkConfig,
+    pub stock: StockConfig,
 }
 
 impl Default for Config {
@@ -56,6 +57,7 @@ impl Default for Config {
             log: LogConfig::default(),
             fetch: FetchConfig::default(),
             bookmark: BookmarkConfig::default(),
+            stock: StockConfig::default(),
         }
     }
 }
@@ -104,6 +106,25 @@ impl Config {
         set_string(&mut self.bookmark.ai.mcp.cf_access_client_secret, "FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_SECRET");
         set_parse(&mut self.bookmark.ai.mcp.timeout_seconds, "FLOWERSS_BOOKMARK_AI_MCP_TIMEOUT_SECONDS")?;
         set_parse(&mut self.bookmark.ai.mcp.poll_interval_ms, "FLOWERSS_BOOKMARK_AI_MCP_POLL_INTERVAL_MS")?;
+        set_parse(&mut self.stock.enabled, "FLOWERSS_STOCK_ENABLED")?;
+        set_parse(&mut self.stock.poll_seconds, "FLOWERSS_STOCK_POLL_SECONDS")?;
+        set_parse(&mut self.stock.history_days, "FLOWERSS_STOCK_HISTORY_DAYS")?;
+        set_parse(&mut self.stock.cache_ttl_seconds, "FLOWERSS_STOCK_CACHE_TTL_SECONDS")?;
+        set_parse(&mut self.stock.max_symbols_per_chat, "FLOWERSS_STOCK_MAX_SYMBOLS_PER_CHAT")?;
+        set_parse(&mut self.stock.max_symbols_global, "FLOWERSS_STOCK_MAX_SYMBOLS_GLOBAL")?;
+        set_parse(&mut self.stock.watchlist_page_size, "FLOWERSS_STOCK_WATCHLIST_PAGE_SIZE")?;
+        set_parse(&mut self.stock.default_delay_minutes_tw, "FLOWERSS_STOCK_DEFAULT_DELAY_MINUTES_TW")?;
+        set_parse(&mut self.stock.default_delay_minutes_us, "FLOWERSS_STOCK_DEFAULT_DELAY_MINUTES_US")?;
+        set_parse(&mut self.stock.late_threshold_minutes, "FLOWERSS_STOCK_LATE_THRESHOLD_MINUTES")?;
+        set_string(&mut self.stock.tw_probe_symbol, "FLOWERSS_STOCK_TW_PROBE_SYMBOL");
+        set_string(&mut self.stock.us_probe_symbol, "FLOWERSS_STOCK_US_PROBE_SYMBOL");
+        set_string(&mut self.stock.yahoo_endpoint, "FLOWERSS_STOCK_YAHOO_ENDPOINT");
+        set_string(&mut self.stock.twse_endpoint, "FLOWERSS_STOCK_TWSE_ENDPOINT");
+        set_string(&mut self.stock.tpex_endpoint, "FLOWERSS_STOCK_TPEX_ENDPOINT");
+        set_parse(&mut self.stock.ai_commentary, "FLOWERSS_STOCK_AI_COMMENTARY")?;
+        set_parse(&mut self.stock.ai_daily_quota, "FLOWERSS_STOCK_AI_DAILY_QUOTA")?;
+        set_parse(&mut self.stock.ai_max_symbols, "FLOWERSS_STOCK_AI_MAX_SYMBOLS")?;
+        set_parse(&mut self.stock.ai_report_timeout_seconds, "FLOWERSS_STOCK_AI_REPORT_TIMEOUT_SECONDS")?;
         // Convenience: honour a bare GEMINI_API_KEY when the namespaced one is
         // unset, so operators can use Google's standard env var name.
         if self.bookmark.ai.api_key.is_empty() {
@@ -385,6 +406,76 @@ impl std::fmt::Debug for McpConfig {
     }
 }
 
+/// Stock tracking, `[stock]`.
+///
+/// Like `AiConfig`, this is reachable from a `Config` that derives `Eq`, so it
+/// holds **no `f32`/`f64`** (the Bollinger `k` factor is a hardcoded call-site
+/// constant, not a field). The three endpoint overrides exist so tests can
+/// point the source layer at `testutil` servers — same reason `[bookmark.ai]`
+/// has one. AI credentials are **not** duplicated here: the commentary path
+/// reuses `[bookmark.ai.mcp]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct StockConfig {
+    pub enabled: bool,
+    pub poll_seconds: u64,
+    pub history_days: u16,
+    pub cache_ttl_seconds: u64,
+    pub max_symbols_per_chat: u32,
+    pub max_symbols_global: u32,
+    pub watchlist_page_size: u32,
+    /// Minutes after the close to push when a chat has set no explicit time.
+    pub default_delay_minutes_tw: u64,
+    pub default_delay_minutes_us: u64,
+    /// A report fired more than this many minutes past its target is flagged
+    /// "delayed" in the render.
+    pub late_threshold_minutes: u64,
+    /// Unconditionally fetched each pass so market state never depends on a
+    /// (possibly empty) user watchlist.
+    pub tw_probe_symbol: String,
+    pub us_probe_symbol: String,
+    pub yahoo_endpoint: String,
+    pub twse_endpoint: String,
+    pub tpex_endpoint: String,
+    /// AI commentary is **off by default**; the numbers always render without it.
+    pub ai_commentary: bool,
+    /// Daily MCP-call budget, metered separately from the bookmark quota even
+    /// though both hit the same bridge — a chatty watchlist must not starve
+    /// bookmark tagging.
+    pub ai_daily_quota: u32,
+    /// How many symbols go into a single batch prompt (not how many calls).
+    pub ai_max_symbols: u32,
+    /// Shorter than `McpConfig::timeout_seconds` (240) so one slow agent turn
+    /// can't stall the 60s worker tick.
+    pub ai_report_timeout_seconds: u64,
+}
+
+impl Default for StockConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_seconds: 60,
+            history_days: 180,
+            cache_ttl_seconds: 60,
+            max_symbols_per_chat: 50,
+            max_symbols_global: 300,
+            watchlist_page_size: 8,
+            default_delay_minutes_tw: 60,
+            default_delay_minutes_us: 90,
+            late_threshold_minutes: 30,
+            tw_probe_symbol: "2330.TW".to_owned(),
+            us_probe_symbol: "AAPL".to_owned(),
+            yahoo_endpoint: "https://query1.finance.yahoo.com".to_owned(),
+            twse_endpoint: "https://openapi.twse.com.tw/v1".to_owned(),
+            tpex_endpoint: "https://www.tpex.org.tw/openapi/v1".to_owned(),
+            ai_commentary: false,
+            ai_daily_quota: 20,
+            ai_max_symbols: 3,
+            ai_report_timeout_seconds: 90,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +532,25 @@ mod tests {
             ("FLOWERSS_BOOKMARK_AI_MCP_CF_ACCESS_CLIENT_SECRET", "cf-secret"),
             ("FLOWERSS_BOOKMARK_AI_MCP_TIMEOUT_SECONDS", "120"),
             ("FLOWERSS_BOOKMARK_AI_MCP_POLL_INTERVAL_MS", "800"),
+            ("FLOWERSS_STOCK_ENABLED", "false"),
+            ("FLOWERSS_STOCK_POLL_SECONDS", "45"),
+            ("FLOWERSS_STOCK_HISTORY_DAYS", "200"),
+            ("FLOWERSS_STOCK_CACHE_TTL_SECONDS", "30"),
+            ("FLOWERSS_STOCK_MAX_SYMBOLS_PER_CHAT", "25"),
+            ("FLOWERSS_STOCK_MAX_SYMBOLS_GLOBAL", "150"),
+            ("FLOWERSS_STOCK_WATCHLIST_PAGE_SIZE", "6"),
+            ("FLOWERSS_STOCK_DEFAULT_DELAY_MINUTES_TW", "45"),
+            ("FLOWERSS_STOCK_DEFAULT_DELAY_MINUTES_US", "75"),
+            ("FLOWERSS_STOCK_LATE_THRESHOLD_MINUTES", "20"),
+            ("FLOWERSS_STOCK_TW_PROBE_SYMBOL", "2317.TW"),
+            ("FLOWERSS_STOCK_US_PROBE_SYMBOL", "MSFT"),
+            ("FLOWERSS_STOCK_YAHOO_ENDPOINT", "https://yahoo.example"),
+            ("FLOWERSS_STOCK_TWSE_ENDPOINT", "https://twse.example"),
+            ("FLOWERSS_STOCK_TPEX_ENDPOINT", "https://tpex.example"),
+            ("FLOWERSS_STOCK_AI_COMMENTARY", "true"),
+            ("FLOWERSS_STOCK_AI_DAILY_QUOTA", "12"),
+            ("FLOWERSS_STOCK_AI_MAX_SYMBOLS", "5"),
+            ("FLOWERSS_STOCK_AI_REPORT_TIMEOUT_SECONDS", "60"),
         ];
         for (key, value) in keys {
             std::env::set_var(key, value);
@@ -480,6 +590,25 @@ mod tests {
         assert_eq!(cfg.bookmark.ai.mcp.timeout_seconds, 120);
         assert_eq!(cfg.bookmark.ai.mcp.poll_interval_ms, 800);
         assert!(cfg.bookmark.ai.mcp.is_configured());
+        assert!(!cfg.stock.enabled);
+        assert_eq!(cfg.stock.poll_seconds, 45);
+        assert_eq!(cfg.stock.history_days, 200);
+        assert_eq!(cfg.stock.cache_ttl_seconds, 30);
+        assert_eq!(cfg.stock.max_symbols_per_chat, 25);
+        assert_eq!(cfg.stock.max_symbols_global, 150);
+        assert_eq!(cfg.stock.watchlist_page_size, 6);
+        assert_eq!(cfg.stock.default_delay_minutes_tw, 45);
+        assert_eq!(cfg.stock.default_delay_minutes_us, 75);
+        assert_eq!(cfg.stock.late_threshold_minutes, 20);
+        assert_eq!(cfg.stock.tw_probe_symbol, "2317.TW");
+        assert_eq!(cfg.stock.us_probe_symbol, "MSFT");
+        assert_eq!(cfg.stock.yahoo_endpoint, "https://yahoo.example");
+        assert_eq!(cfg.stock.twse_endpoint, "https://twse.example");
+        assert_eq!(cfg.stock.tpex_endpoint, "https://tpex.example");
+        assert!(cfg.stock.ai_commentary);
+        assert_eq!(cfg.stock.ai_daily_quota, 12);
+        assert_eq!(cfg.stock.ai_max_symbols, 5);
+        assert_eq!(cfg.stock.ai_report_timeout_seconds, 60);
 
         for (key, _) in keys {
             std::env::remove_var(key);
