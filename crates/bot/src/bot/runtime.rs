@@ -399,7 +399,7 @@ async fn handle_unsubscribe(
 
     match state
         .repo
-        .source_by_link(payload)
+        .source_for_unsub_arg(payload)
         .await
         .map_err(to_request_error)?
     {

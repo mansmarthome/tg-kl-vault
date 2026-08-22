@@ -214,6 +214,18 @@ impl Repo {
         .await
     }
 
+    /// Resolve the source an `/unsub` argument refers to. `/feedcheck` and
+    /// `/list` present sources by their numeric id (shown as `[28]`), so a bare
+    /// number is looked up by id; anything else is treated as a feed link, the
+    /// form `/unsub` historically accepted.
+    pub async fn source_for_unsub_arg(&self, arg: &str) -> DbResult<Option<Source>> {
+        if let Ok(id) = arg.parse::<i64>() {
+            self.get_source(id).await
+        } else {
+            self.source_by_link(arg).await
+        }
+    }
+
     pub async fn insert_source(&self, link: &str, title: &str) -> DbResult<i64> {
         // `RETURNING id` rather than `last_insert_rowid()`: libsql is a single
         // shared connection, and now that a fourth writer (the stock worker)
@@ -747,6 +759,48 @@ mod tests {
             .unwrap());
         assert!(repo.unsubscribe_user(42, source_id).await.unwrap());
         assert!(!repo.unsubscribe_user(42, source_id).await.unwrap());
+    }
+
+    /// `/feedcheck` shows each source by its numeric id and tells the user to
+    /// `/unsub` the dead ones, so a bare number must resolve to that source.
+    /// The historical link form must keep working too.
+    #[tokio::test]
+    async fn source_for_unsub_arg_accepts_id_or_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let db = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(db);
+
+        let source_id = repo
+            .insert_source("https://example.com/feed", "Example")
+            .await
+            .unwrap();
+
+        // Numeric id (what /feedcheck displays as "[28]").
+        assert_eq!(
+            repo.source_for_unsub_arg(&source_id.to_string())
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            source_id
+        );
+        // Historical link form.
+        assert_eq!(
+            repo.source_for_unsub_arg("https://example.com/feed")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            source_id
+        );
+        // Unknown id and unknown link both resolve to nothing.
+        assert!(repo.source_for_unsub_arg("999").await.unwrap().is_none());
+        assert!(repo
+            .source_for_unsub_arg("https://nope.test/feed")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
