@@ -100,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
         Some(TwOfficialSource::new(
             fetcher.client().clone(),
             config.stock.twse_endpoint.clone(),
+            config.stock.twse_history_endpoint.clone(),
             config.stock.tpex_endpoint.clone(),
         )),
         config.stock.clone(),

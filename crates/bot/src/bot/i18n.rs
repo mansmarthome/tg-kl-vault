@@ -166,6 +166,7 @@ strings! {
     stk_ai_unavailable => en: "AI commentary is not configured.", zh: "尚未設定 AI 解讀。";
     stk_ai_failed => en: "AI commentary failed.", zh: "AI 解讀失敗。";
     stk_ai_heading => en: "🤖 <b>AI commentary</b>", zh: "🤖 <b>AI 解讀</b>";
+    stk_source_busy_ai => en: "📈 Data source is busy — fetching via the AI agent…", zh: "📈 資料來源忙碌，改由 AI 代為查詢…";
 }
 
 impl Lang {

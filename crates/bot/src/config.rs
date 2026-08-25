@@ -120,6 +120,7 @@ impl Config {
         set_string(&mut self.stock.us_probe_symbol, "FLOWERSS_STOCK_US_PROBE_SYMBOL");
         set_string(&mut self.stock.yahoo_endpoint, "FLOWERSS_STOCK_YAHOO_ENDPOINT");
         set_string(&mut self.stock.twse_endpoint, "FLOWERSS_STOCK_TWSE_ENDPOINT");
+        set_string(&mut self.stock.twse_history_endpoint, "FLOWERSS_STOCK_TWSE_HISTORY_ENDPOINT");
         set_string(&mut self.stock.tpex_endpoint, "FLOWERSS_STOCK_TPEX_ENDPOINT");
         set_parse(&mut self.stock.ai_commentary, "FLOWERSS_STOCK_AI_COMMENTARY")?;
         set_parse(&mut self.stock.ai_daily_quota, "FLOWERSS_STOCK_AI_DAILY_QUOTA")?;
@@ -436,6 +437,9 @@ pub struct StockConfig {
     pub us_probe_symbol: String,
     pub yahoo_endpoint: String,
     pub twse_endpoint: String,
+    /// Per-symbol daily history (TWSE `STOCK_DAY`), on the `www` host rather than
+    /// the openapi host — the primary TW source, since Yahoo IP-blocks VPSes.
+    pub twse_history_endpoint: String,
     pub tpex_endpoint: String,
     /// AI commentary is **off by default**; the numbers always render without it.
     pub ai_commentary: bool,
@@ -467,6 +471,7 @@ impl Default for StockConfig {
             us_probe_symbol: "AAPL".to_owned(),
             yahoo_endpoint: "https://query1.finance.yahoo.com".to_owned(),
             twse_endpoint: "https://openapi.twse.com.tw/v1".to_owned(),
+            twse_history_endpoint: "https://www.twse.com.tw".to_owned(),
             tpex_endpoint: "https://www.tpex.org.tw/openapi/v1".to_owned(),
             ai_commentary: false,
             ai_daily_quota: 20,
@@ -546,6 +551,7 @@ mod tests {
             ("FLOWERSS_STOCK_US_PROBE_SYMBOL", "MSFT"),
             ("FLOWERSS_STOCK_YAHOO_ENDPOINT", "https://yahoo.example"),
             ("FLOWERSS_STOCK_TWSE_ENDPOINT", "https://twse.example"),
+            ("FLOWERSS_STOCK_TWSE_HISTORY_ENDPOINT", "https://twsehist.example"),
             ("FLOWERSS_STOCK_TPEX_ENDPOINT", "https://tpex.example"),
             ("FLOWERSS_STOCK_AI_COMMENTARY", "true"),
             ("FLOWERSS_STOCK_AI_DAILY_QUOTA", "12"),
@@ -604,6 +610,7 @@ mod tests {
         assert_eq!(cfg.stock.us_probe_symbol, "MSFT");
         assert_eq!(cfg.stock.yahoo_endpoint, "https://yahoo.example");
         assert_eq!(cfg.stock.twse_endpoint, "https://twse.example");
+        assert_eq!(cfg.stock.twse_history_endpoint, "https://twsehist.example");
         assert_eq!(cfg.stock.tpex_endpoint, "https://tpex.example");
         assert!(cfg.stock.ai_commentary);
         assert_eq!(cfg.stock.ai_daily_quota, 12);

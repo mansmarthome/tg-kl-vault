@@ -240,6 +240,7 @@ Every config value can be supplied through environment variables with the `FLOWE
 | `FLOWERSS_STOCK_US_PROBE_SYMBOL` | `stock.us_probe_symbol` | `AAPL` |
 | `FLOWERSS_STOCK_YAHOO_ENDPOINT` | `stock.yahoo_endpoint` | `https://query1.finance.yahoo.com` |
 | `FLOWERSS_STOCK_TWSE_ENDPOINT` | `stock.twse_endpoint` | `https://openapi.twse.com.tw/v1` |
+| `FLOWERSS_STOCK_TWSE_HISTORY_ENDPOINT` | `stock.twse_history_endpoint` | `https://www.twse.com.tw` |
 | `FLOWERSS_STOCK_TPEX_ENDPOINT` | `stock.tpex_endpoint` | `https://www.tpex.org.tw/openapi/v1` |
 | `FLOWERSS_STOCK_AI_COMMENTARY` | `stock.ai_commentary` | `false` |
 | `FLOWERSS_STOCK_AI_DAILY_QUOTA` | `stock.ai_daily_quota` | `20` |

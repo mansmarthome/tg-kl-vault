@@ -16,17 +16,20 @@
 //! case is "no fallback", never "wrong fallback". Confirm field names against a
 //! real payload on first use.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Datelike};
 use futures::StreamExt;
 use reqwest::Client;
 use serde_json::{Map, Value};
 use tracing::warn;
 
+use super::super::bars::{Bar, Series};
 use super::super::symbol::{Board, Symbol};
-use super::SourceError;
 use super::roc::{parse_tw_number, roc_to_iso};
+use super::SourceError;
 
 /// Re-fetch a dump at most this often; within the window the cached parse is
 /// reused so a room full of chats sharing the fallback costs one download.
@@ -53,7 +56,10 @@ struct Dump {
     /// The payload's own trading day (ISO), or empty if it carried none.
     date: String,
     /// Keyed by bare local code (`2330`, `6488`).
-    quotes: std::collections::HashMap<String, TwBar>,
+    quotes: HashMap<String, TwBar>,
+    /// Company names by local code (the all-symbols dump carries them; the
+    /// per-symbol `STOCK_DAY` history does not).
+    names: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -62,23 +68,94 @@ struct Cache {
     tpex: Option<Dump>,
 }
 
+/// Taiwan has no DST since 1979 — this is a rule, not a simplification. Used to
+/// synthesize a session clock from the date-only official history.
+pub const TW_UTC_OFFSET: i64 = 8 * 3600;
+/// TWSE/TPEx regular session: 09:00–13:30 local.
+const TW_OPEN_SECS: i64 = 9 * 3600;
+const TW_CLOSE_SECS: i64 = 13 * 3600 + 30 * 60;
+
 pub struct TwOfficialSource {
     client: Client,
     twse_endpoint: String,
+    twse_history_endpoint: String,
     tpex_endpoint: String,
     max_body_bytes: usize,
     cache: Mutex<Cache>,
 }
 
 impl TwOfficialSource {
-    pub fn new(client: Client, twse_endpoint: String, tpex_endpoint: String) -> Self {
+    pub fn new(
+        client: Client,
+        twse_endpoint: String,
+        twse_history_endpoint: String,
+        tpex_endpoint: String,
+    ) -> Self {
         Self {
             client,
             twse_endpoint: twse_endpoint.trim_end_matches('/').to_owned(),
+            twse_history_endpoint: twse_history_endpoint.trim_end_matches('/').to_owned(),
             tpex_endpoint: tpex_endpoint.trim_end_matches('/').to_owned(),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             cache: Mutex::new(Cache::default()),
         }
+    }
+
+    /// Determines whether a bare Taiwan code is listed on TWSE or TPEx, using
+    /// the official all-symbols dumps (keyless, not IP-blocked). `None` when the
+    /// code is in neither dump.
+    pub async fn classify_local(&self, local_code: &str) -> anyhow::Result<Option<Board>> {
+        for board in [Board::Twse, Board::Tpex] {
+            self.ensure_fresh(board).await?;
+            let cache = self.cache.lock().unwrap();
+            if board_slot(&cache, board).is_some_and(|d| d.quotes.contains_key(local_code)) {
+                return Ok(Some(board));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Per-symbol daily OHLCV history for a **TWSE** symbol via `STOCK_DAY`,
+    /// covering roughly `months` recent months, returned as a `Series` with a
+    /// synthesized TW session clock. TPEx is unsupported here (no clean
+    /// per-symbol history endpoint) and returns an error so the caller can fall
+    /// back to Yahoo.
+    pub async fn history(&self, sym: &Symbol, months: u32, now: i64) -> anyhow::Result<Series> {
+        if sym.board != Board::Twse {
+            return Err(SourceError::NotFound.into());
+        }
+        let mut bars: Vec<Bar> = Vec::new();
+        // Walk back month by month from the current month.
+        let (mut y, mut m) = month_of(now);
+        for _ in 0..months.max(1) {
+            let url = format!(
+                "{}/exchangeReport/STOCK_DAY?response=json&date={:04}{:02}01&stockNo={}",
+                self.twse_history_endpoint, y, m, sym.local_code
+            );
+            match self.fetch_capped(&url).await {
+                Ok(body) => bars.extend(parse_stock_day(&body)),
+                Err(err) => tracing::warn!(symbol = %sym.canonical, %url, error = %err, "twse history month failed"),
+            }
+            (y, m) = prev_month(y, m);
+        }
+        if bars.is_empty() {
+            return Err(SourceError::NotFound.into());
+        }
+        bars.sort_by_key(|b| b.ts);
+        bars.dedup_by_key(|b| b.ts);
+        let name = self.dump_name(Board::Twse, &sym.local_code).await;
+        Ok(synthesize_series(bars, name))
+    }
+
+    /// Company name for a local code from the cached all-symbols dump, or empty.
+    async fn dump_name(&self, board: Board, local_code: &str) -> String {
+        if self.ensure_fresh(board).await.is_err() {
+            return String::new();
+        }
+        let cache = self.cache.lock().unwrap();
+        board_slot(&cache, board)
+            .and_then(|d| d.names.get(local_code).cloned())
+            .unwrap_or_default()
     }
 
     /// Returns a fallback close for `sym` **only** if the official dump's own
@@ -184,7 +261,8 @@ fn empty_dump() -> Dump {
     Dump {
         fetched_at: Instant::now(),
         date: String::new(),
-        quotes: std::collections::HashMap::new(),
+        quotes: HashMap::new(),
+        names: HashMap::new(),
     }
 }
 
@@ -208,7 +286,8 @@ fn parse_dump(body: &str, source: &'static str) -> Dump {
     };
 
     let mut date = String::new();
-    let mut quotes = std::collections::HashMap::new();
+    let mut quotes = HashMap::new();
+    let mut names = HashMap::new();
     for rec in records {
         let Value::Object(rec) = rec else { continue };
         let Some(code) = field(&rec, &["Code", "SecuritiesCompanyCode", "股票代號"]) else {
@@ -218,6 +297,9 @@ fn parse_dump(body: &str, source: &'static str) -> Dump {
             if let Some(iso) = field(&rec, &["Date", "日期"]).and_then(roc_to_iso) {
                 date = iso;
             }
+        }
+        if let Some(name) = field(&rec, &["Name", "CompanyName", "公司名稱", "名稱"]) {
+            names.insert(code.to_owned(), name.to_owned());
         }
         let bar = TwBar {
             trade_date: date.clone(),
@@ -247,6 +329,95 @@ fn parse_dump(body: &str, source: &'static str) -> Dump {
         fetched_at: Instant::now(),
         date,
         quotes,
+        names,
+    }
+}
+
+// ─── Per-symbol history helpers (TWSE STOCK_DAY) ─────────────────────────────
+
+/// TW-local (year, month) for an epoch.
+fn month_of(now: i64) -> (i32, u32) {
+    let dt = DateTime::from_timestamp(now + TW_UTC_OFFSET, 0).unwrap_or_default();
+    (dt.year(), dt.month())
+}
+
+fn prev_month(y: i32, m: u32) -> (i32, u32) {
+    if m == 1 {
+        (y - 1, 12)
+    } else {
+        (y, m - 1)
+    }
+}
+
+/// UTC epoch of TW-local midnight for an ISO `YYYY-MM-DD` date.
+fn iso_to_ts(iso: &str) -> Option<i64> {
+    let date = chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d").ok()?;
+    let midnight_utc = date.and_hms_opt(0, 0, 0)?.and_utc().timestamp();
+    Some(midnight_utc - TW_UTC_OFFSET)
+}
+
+/// Parses a TWSE `STOCK_DAY` response into daily bars. Fields (fixed order):
+/// [日期, 成交股數, 成交金額, 開盤, 最高, 最低, 收盤, 漲跌價差, …].
+fn parse_stock_day(body: &str) -> Vec<Bar> {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    if v.get("stat").and_then(Value::as_str) != Some("OK") {
+        return Vec::new();
+    }
+    let Some(rows) = v.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut bars = Vec::new();
+    for row in rows {
+        let Some(cells) = row.as_array() else { continue };
+        let get = |i: usize| cells.get(i).and_then(Value::as_str);
+        let Some(ts) = get(0).and_then(roc_to_iso).as_deref().and_then(iso_to_ts) else {
+            continue;
+        };
+        let close = get(6).and_then(parse_tw_number);
+        if close.is_none() {
+            continue;
+        }
+        bars.push(Bar {
+            ts,
+            open: get(3).and_then(parse_tw_number),
+            high: get(4).and_then(parse_tw_number),
+            low: get(5).and_then(parse_tw_number),
+            close,
+            volume: get(1).and_then(parse_tw_number).map(|v| v as i64),
+        });
+    }
+    bars
+}
+
+/// Builds a `Series` from date-only history by synthesizing a TW session clock
+/// (fixed +8h offset, 09:00–13:30) and deriving 52-week extremes from the bars.
+fn synthesize_series(bars: Vec<Bar>, name: String) -> Series {
+    let last = bars.last().copied().unwrap_or(Bar {
+        ts: 0,
+        open: None,
+        high: None,
+        low: None,
+        close: None,
+        volume: None,
+    });
+    let prev_close = (bars.len() >= 2).then(|| bars[bars.len() - 2].close).flatten();
+    let week52_high = bars.iter().filter_map(|b| b.high).fold(f64::MIN, f64::max);
+    let week52_low = bars.iter().filter_map(|b| b.low).fold(f64::MAX, f64::min);
+    Series {
+        gmtoffset: TW_UTC_OFFSET,
+        regular_start: last.ts + TW_OPEN_SECS,
+        regular_end: last.ts + TW_CLOSE_SECS,
+        market_time: last.ts + TW_CLOSE_SECS,
+        last_price: last.close,
+        prev_close,
+        week52_high: week52_high.is_finite().then_some(week52_high),
+        week52_low: week52_low.is_finite().then_some(week52_low),
+        exchange: "TAI".to_owned(),
+        display_name: name,
+        currency: "TWD".to_owned(),
+        bars,
     }
 }
 
@@ -274,6 +445,45 @@ mod tests {
         }
     }
 
+    // TWSE STOCK_DAY shape (pinned to the live 2026-08 response).
+    const STOCK_DAY_2330: &str = r#"{"stat":"OK","fields":["日期","成交股數","成交金額","開盤價","最高價","最低價","收盤價","漲跌價差","成交筆數","註記"],"data":[
+      ["115/08/01","30,000,000","70,000,000,000","2,400.00","2,420.00","2,390.00","2,410.00","+10.00","150,000",""],
+      ["115/08/03","35,209,944","83,673,350,698","2,390.00","2,395.00","2,365.00","2,370.00","-55.00","174,489",""]
+    ]}"#;
+
+    #[test]
+    fn stock_day_parses_ohlcv_and_dates() {
+        let bars = parse_stock_day(STOCK_DAY_2330);
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0].close, Some(2410.0));
+        assert_eq!(bars[0].open, Some(2400.0));
+        assert_eq!(bars[0].volume, Some(30_000_000));
+        assert_eq!(bars[1].close, Some(2370.0));
+        // ROC 115/08/01 -> 2026-08-01; ts is TW-local midnight in UTC, so
+        // market_day recovers the calendar date.
+        use crate::stock::clock::{market_date_string, market_day};
+        assert_eq!(market_date_string(market_day(bars[0].ts, TW_UTC_OFFSET)), "2026-08-01");
+    }
+
+    #[test]
+    fn stock_day_synthesizes_a_tw_session_clock() {
+        let bars = parse_stock_day(STOCK_DAY_2330);
+        let series = synthesize_series(bars, "台積電".to_owned());
+        assert_eq!(series.gmtoffset, TW_UTC_OFFSET);
+        assert_eq!(series.currency, "TWD");
+        assert_eq!(series.display_name, "台積電");
+        assert_eq!(series.last_price, Some(2370.0));
+        assert_eq!(series.prev_close, Some(2410.0));
+        // Close bell is 13:30 local.
+        assert_eq!((series.regular_end + TW_UTC_OFFSET).rem_euclid(86_400), 13 * 3600 + 30 * 60);
+    }
+
+    #[test]
+    fn bad_stock_day_is_empty_not_a_panic() {
+        assert!(parse_stock_day("<html>").is_empty());
+        assert!(parse_stock_day(r#"{"stat":"很抱歉，沒有符合條件的資料!"}"#).is_empty());
+    }
+
     #[test]
     fn parse_dump_reads_date_and_quotes() {
         let dump = parse_dump(TPEX_TODAY, "tpex");
@@ -289,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn fallback_is_served_when_the_dump_date_matches() {
         let base = spawn_scripted_server(vec![(200, TPEX_TODAY)]).await;
-        let src = TwOfficialSource::new(Client::new(), "http://unused".into(), base);
+        let src = TwOfficialSource::new(Client::new(), "http://unused".into(), "http://unused".into(), base);
         let bar = src.fallback_quote(&sym("6488.TWO"), "2026-08-21").await.unwrap();
         assert_eq!(bar.unwrap().close, Some(720.0));
     }
@@ -298,12 +508,12 @@ mod tests {
     async fn taiwan_fallback_is_rejected_when_its_own_date_is_stale() {
         // TWSE dump says 2026-08-20 but we want to report 2026-08-21.
         let base = spawn_scripted_server(vec![(200, TWSE_STALE)]).await;
-        let src = TwOfficialSource::new(Client::new(), base, "http://unused".into());
+        let src = TwOfficialSource::new(Client::new(), base, "http://unused".into(), "http://unused".into());
         let bar = src.fallback_quote(&sym("2330.TW"), "2026-08-21").await.unwrap();
         assert_eq!(bar, None, "a stale-dated dump must be refused");
         // ...but it IS served for the day it actually covers.
         let base2 = spawn_scripted_server(vec![(200, TWSE_STALE)]).await;
-        let src2 = TwOfficialSource::new(Client::new(), base2, "http://unused".into());
+        let src2 = TwOfficialSource::new(Client::new(), base2, "http://unused".into(), "http://unused".into());
         let ok = src2.fallback_quote(&sym("2330.TW"), "2026-08-20").await.unwrap();
         assert_eq!(ok.unwrap().close, Some(2410.0));
     }
@@ -311,7 +521,7 @@ mod tests {
     #[tokio::test]
     async fn an_unparseable_dump_fails_safe_to_no_fallback() {
         let base = spawn_scripted_server(vec![(200, "<html>not json</html>")]).await;
-        let src = TwOfficialSource::new(Client::new(), base, "http://unused".into());
+        let src = TwOfficialSource::new(Client::new(), base, "http://unused".into(), "http://unused".into());
         let bar = src.fallback_quote(&sym("2330.TW"), "2026-08-21").await.unwrap();
         assert_eq!(bar, None);
     }

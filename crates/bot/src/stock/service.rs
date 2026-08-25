@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::config::StockConfig;
 use crate::db::bookmarks::now_unix;
@@ -30,8 +30,10 @@ use super::symbol::{self, Board, Market, Parsed, Symbol};
 /// top of this; interactive calls just want low latency.
 const SOURCE_MIN_INTERVAL: Duration = Duration::from_millis(300);
 /// Bounded retries (stale-claim recovery) live in the ledger; here we cap the
-/// escalating 429 cooldown ladder at 60 minutes.
-const COOLDOWN_LADDER_MINS: [u64; 3] = [15, 30, 60];
+/// escalating 429 cooldown ladder. Deliberately short at the front: for a
+/// personal bot, one transient 429 must not make `/stock` dead for 15 minutes,
+/// so the first cooldown is 60s and only *repeated* 429s escalate.
+const COOLDOWN_LADDER_SECS: [u64; 3] = [60, 300, 900];
 
 /// Which market(s) a listing covers. Wire form `"a"|"tw"|"us"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,9 +192,15 @@ impl<S: StockSource> StockService<S> {
             Err(err) => match classify_source_error(err) {
                 SourceError::RateLimited => {
                     let n = self.consecutive_429.fetch_add(1, Ordering::Relaxed) as usize;
-                    let mins = COOLDOWN_LADDER_MINS[n.min(COOLDOWN_LADDER_MINS.len() - 1)];
+                    let secs = COOLDOWN_LADDER_SECS[n.min(COOLDOWN_LADDER_SECS.len() - 1)];
                     *self.cooldown_until.lock().unwrap() =
-                        Some(Instant::now() + Duration::from_secs(mins * 60));
+                        Some(Instant::now() + Duration::from_secs(secs));
+                    warn!(
+                        source = self.source.name(),
+                        cooldown_secs = secs,
+                        consecutive = n + 1,
+                        "stock source rate-limited (429); cooling down"
+                    );
                 }
                 SourceError::Http(401 | 403) => {
                     let was_disabled = self.disabled.swap(true, Ordering::Relaxed);
@@ -217,11 +225,10 @@ impl<S: StockSource> StockService<S> {
                 if self.cached_meta(&sym.canonical).await.is_some() {
                     return Ok(sym);
                 }
-                match self.guarded_series(&sym).await {
-                    Ok(series) => {
-                        let _ = self.cache_series(&sym, &series).await;
-                        Ok(sym)
-                    }
+                // `refresh` prefers the official TW source (Yahoo IP-blocks many
+                // hosts) and falls back to Yahoo; for US it is Yahoo directly.
+                match self.refresh(&sym).await {
+                    Ok(()) => Ok(sym),
                     Err(err) => Err(classify_source_error(&err)),
                 }
             }
@@ -237,7 +244,17 @@ impl<S: StockSource> StockService<S> {
                 return Ok(cand);
             }
         }
-        // Probe .TW (expect exchange TAI) then .TWO (expect TWO). A 404 means
+        // Official all-symbols dump decides the board (keyless, not IP-blocked),
+        // so a bare TW code resolves even when Yahoo is throttling us.
+        if let Some(fb) = &self.tw_fallback {
+            if let Ok(Some(board)) = fb.classify_local(local_code).await {
+                let cand = tw_candidate(local_code, board);
+                let _ = self.refresh(&cand).await; // warm the cache best-effort
+                return Ok(cand);
+            }
+        }
+        // Yahoo two-stage probe as a fallback. Probe .TW (expect TAI) then .TWO
+        // (expect TWO). A 404 means
         // "not this board", so continue; any other error is a real upstream
         // problem and must not be misreported as "symbol not found".
         for (board, want_exchange) in [(Board::Twse, "TAI"), (Board::Tpex, "TWO")] {
@@ -268,10 +285,31 @@ impl<S: StockSource> StockService<S> {
         meta.is_some_and(|m| now - m.fetched_at < self.config.cache_ttl_seconds as i64)
     }
 
-    /// Refreshes one symbol from the primary source and writes it to the cache.
+    /// Refreshes one symbol from the best available source and caches it.
     pub(crate) async fn refresh(&self, sym: &Symbol) -> anyhow::Result<()> {
-        let series = self.guarded_series(sym).await?;
+        let series = self.fetch_series(sym).await?;
         self.cache_series(sym, &series).await
+    }
+
+    /// Fetches a series, preferring the official TW source for Taiwan symbols
+    /// (Yahoo IP-blocks many hosts) and falling back to Yahoo. TPEx has no
+    /// official history endpoint, so it falls straight through to Yahoo.
+    async fn fetch_series(&self, sym: &Symbol) -> anyhow::Result<Series> {
+        if sym.market == Market::Tw {
+            if let Some(fb) = &self.tw_fallback {
+                match fb.history(sym, self.history_months(), now_unix()).await {
+                    Ok(series) => return Ok(series),
+                    Err(err) => {
+                        warn!(symbol = %sym.canonical, error = %err, "tw official history unavailable; trying yahoo");
+                    }
+                }
+            }
+        }
+        self.guarded_series(sym).await
+    }
+
+    fn history_months(&self) -> u32 {
+        (u32::from(self.config.history_days) / 30 + 1).clamp(2, 12)
     }
 
     /// Sanitizes and persists a fetched series' bars + meta. Non-sane bars
@@ -361,7 +399,7 @@ impl<S: StockSource> StockService<S> {
     /// Fetches the probe/symbol's current session clock, caching the series as a
     /// side effect. Used by the worker to classify the market state each pass.
     pub async fn fetch_session_meta(&self, sym: &Symbol) -> anyhow::Result<SessionMeta> {
-        let series = self.guarded_series(sym).await?;
+        let series = self.fetch_series(sym).await?;
         let meta = series.session_meta();
         self.cache_series(sym, &series).await?;
         Ok(meta)

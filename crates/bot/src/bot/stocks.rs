@@ -182,22 +182,23 @@ pub async fn handle_stock(
     }
     let sym = match state.stock.resolve(payload).await {
         Ok(sym) => sym,
-        Err(err) => {
-            let text = if matches!(err, crate::stock::SourceError::NotFound) {
-                lang.stk_unknown_symbol()
-            } else {
-                lang.stk_upstream()
-            };
-            bot.send_message(msg.chat.id, text).await?;
+        Err(crate::stock::SourceError::NotFound) => {
+            bot.send_message(msg.chat.id, lang.stk_unknown_symbol()).await?;
             return Ok(());
+        }
+        Err(err) => {
+            // Not "bad symbol" — the data source is down/blocked. Log the
+            // concrete error (this path was previously silent) and, if the MCP
+            // agent is available, degrade to an agent-fetched card.
+            warn!(query = %payload, error = ?err, "stock resolve failed (data source)");
+            return source_down_fallback(bot, msg, state, payload, lang).await;
         }
     };
     let view = match state.stock.snapshot(&sym, now_unix()).await {
         Ok(view) => view,
         Err(err) => {
             warn!(symbol = %sym.canonical, error = %err, "stock snapshot failed");
-            bot.send_message(msg.chat.id, lang.stk_upstream()).await?;
-            return Ok(());
+            return source_down_fallback(bot, msg, state, &sym.local_code, lang).await;
         }
     };
     let ai_available = state.config.bookmark.ai.mcp.is_configured();
@@ -206,6 +207,49 @@ pub async fn handle_stock(
         .link_preview_options(no_preview())
         .reply_markup(quote_card_keyboard(&sym.canonical, ai_available, lang))
         .await?;
+    Ok(())
+}
+
+/// When the direct data source is down/blocked, degrade to an agent-fetched
+/// card if the MCP bridge is configured (the agent may run somewhere with
+/// working market-data access); otherwise report the upstream error. The agent
+/// turn is slow, so we ack with a "busy" message and reply from a spawned task.
+async fn source_down_fallback(
+    bot: &Bot,
+    msg: &Message,
+    state: &BotState,
+    symbol_query: &str,
+    lang: Lang,
+) -> ResponseResult<()> {
+    if !state.config.bookmark.ai.mcp.is_configured() {
+        bot.send_message(msg.chat.id, lang.stk_upstream()).await?;
+        return Ok(());
+    }
+    bot.send_message(msg.chat.id, lang.stk_source_busy_ai()).await?;
+    let client = crate::tagging::mcp::McpClient::new(
+        state.fetcher.client().clone(),
+        state.config.bookmark.ai.mcp.clone(),
+    );
+    let chat_id = msg.chat.id;
+    let query = symbol_query.to_owned();
+    let bot = bot.clone();
+    tokio::spawn(async move {
+        use crate::stock::commentary::{build_fetch_prompt, sanitize};
+        let reply = match client.run(&build_fetch_prompt(&query, lang)).await {
+            Ok(text) if !text.trim().is_empty() => format!(
+                "{}\n\n{}\n\n{}",
+                lang.stk_ai_heading(),
+                teloxide::utils::html::escape(&sanitize(&text)),
+                lang.stk_ai_disclaimer()
+            ),
+            _ => lang.stk_ai_failed().to_owned(),
+        };
+        let _ = bot
+            .send_message(chat_id, reply)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(no_preview())
+            .await;
+    });
     Ok(())
 }
 

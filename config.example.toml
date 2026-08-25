@@ -80,9 +80,17 @@ poll_interval_ms        = 1500
 # quotes + technical indicators, and push a close-of-day report per market.
 # Every field has a FLOWERSS_STOCK_* env override.
 #
-# The market clock (which day is a trading day, when the bell rings) is read
-# entirely from Yahoo's per-response session data, so there is no timezone
-# database and no hard-coded holiday calendar to maintain.
+# Data sources: 台股 (TWSE 上市) uses the official TWSE endpoints as the primary
+# source (keyless and not rate-limited, so it works even when Yahoo throttles a
+# cloud/VPS IP); TPEx (上櫃) and 美股 use Yahoo. Yahoo aggressively rate-limits
+# datacenter IPs (HTTP 429) — if US quotes fail, run behind a residential proxy
+# (socks5 above) or configure the MCP bridge below: when the direct source is
+# down, /stock degrades to an AI-fetched card (only useful if your agent has
+# working market-data access).
+#
+# The US market clock is read from Yahoo's per-response session data (no timezone
+# database, no hard-coded holiday calendar); the TW clock is synthesized from the
+# fixed +8h offset and the 09:00–13:30 session.
 #
 # IMPORTANT (Turso): the close-report dedup is per-instance plus a DB ledger.
 # Under TURSO_DATABASE_URL the embedded replica reads can lag ~60s, so run only
@@ -101,7 +109,8 @@ late_threshold_minutes   = 30         # a report later than this is flagged "del
 tw_probe_symbol          = "2330.TW"  # probed every pass so market state never needs a watchlist
 us_probe_symbol          = "AAPL"
 yahoo_endpoint           = "https://query1.finance.yahoo.com"
-twse_endpoint            = "https://openapi.twse.com.tw/v1"
+twse_endpoint            = "https://openapi.twse.com.tw/v1"   # all-symbols dump (openapi host)
+twse_history_endpoint    = "https://www.twse.com.tw"          # per-symbol STOCK_DAY history (www host)
 tpex_endpoint            = "https://www.tpex.org.tw/openapi/v1"
 
 # AI commentary reuses the [bookmark.ai.mcp] bridge above — no separate

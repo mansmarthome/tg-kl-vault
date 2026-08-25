@@ -109,6 +109,19 @@ pub fn build_report_prompt(briefs: &[SymbolBrief], lang: Lang) -> String {
     out
 }
 
+/// Prompt for the degraded fallback: the direct data source (Yahoo) is
+/// unreachable/blocked, so ask the agent — which may run somewhere with working
+/// market-data access — to look the symbol up itself and give a quick read.
+pub fn build_fetch_prompt(symbol: &str, lang: Lang) -> String {
+    format!(
+        "You are a concise financial assistant with web access. Look up the current price, \
+         today's change (absolute and %), and a brief technical read for the stock \"{symbol}\". \
+         Reply in {}, 2–4 short sentences, no markdown and no preamble. If you genuinely cannot \
+         find it, say so in one short sentence.",
+        lang_name(lang)
+    )
+}
+
 /// Single-symbol prompt for the interactive 🤖 button.
 pub fn build_single_prompt(b: &SymbolBrief, lang: Lang) -> String {
     let sig = signals_phrase(b.signals, lang);
@@ -307,6 +320,14 @@ mod tests {
         // keeps it as a single overall note rather than discarding it.
         let map = split_batch_commentary("Here is my analysis of the market today.", &["2330".to_owned()]);
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn fetch_prompt_names_the_symbol_and_language() {
+        let p = build_fetch_prompt("AAPL", Lang::ZhTw);
+        assert!(p.contains("AAPL"));
+        assert!(p.contains("Traditional Chinese"));
+        assert!(p.contains("web access"));
     }
 
     #[test]
