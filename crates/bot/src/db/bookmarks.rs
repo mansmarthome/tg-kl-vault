@@ -307,7 +307,7 @@ impl Repo {
 
     /// Worker success: replace all tags with the AI suggestions and mark done.
     pub async fn finish_bookmark_tagging(&self, id: i64, tags: &[String]) -> DbResult<()> {
-        let tx = self.conn().transaction().await?;
+        let tx = self.db().begin().await?;
         tx.execute(
             "DELETE FROM bookmark_tags WHERE bookmark_id = ?",
             libsql::params![id],
@@ -368,7 +368,7 @@ impl Repo {
         id: i64,
         tags: &[&str],
     ) -> DbResult<bool> {
-        let tx = self.conn().transaction().await?;
+        let tx = self.db().begin().await?;
         let affected = tx
             .execute(
                 "UPDATE bookmarks SET tag_state = 1, updated_at = ? WHERE id = ? AND chat_id = ?",
@@ -403,7 +403,7 @@ impl Repo {
         id: i64,
         tag: &str,
     ) -> DbResult<Option<bool>> {
-        let tx = self.conn().transaction().await?;
+        let tx = self.db().begin().await?;
         let affected = tx
             .execute(
                 "UPDATE bookmarks SET tag_state = 1, updated_at = ? WHERE id = ? AND chat_id = ?",
@@ -460,7 +460,7 @@ impl Repo {
     /// Deletes a bookmark and its tag rows in one transaction (no FK cascade;
     /// see migration 0004). Scoped by `chat_id`.
     pub async fn delete_bookmark(&self, chat_id: i64, id: i64) -> DbResult<bool> {
-        let tx = self.conn().transaction().await?;
+        let tx = self.db().begin().await?;
         let affected = tx
             .execute(
                 "DELETE FROM bookmarks WHERE chat_id = ? AND id = ?",

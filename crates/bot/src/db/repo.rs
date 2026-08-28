@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use libsql::{params::IntoParams, Connection, Row, Value};
+use libsql::{params::IntoParams, Connection, Row, Rows, Value};
 
 use super::models::{Content, Source, Subscribe, User};
 use super::{Db, DbResult, FromRow};
@@ -70,7 +70,7 @@ impl Repo {
         Self { db }
     }
 
-    pub fn conn(&self) -> &Connection {
+    pub fn conn(&self) -> Connection {
         self.db.conn()
     }
 
@@ -81,7 +81,25 @@ impl Repo {
     // --- small query helpers replacing sqlx's typed query API ---
 
     pub(crate) async fn exec(&self, sql: &str, params: impl IntoParams) -> DbResult<u64> {
-        self.conn().execute(sql, params).await
+        let params = params.into_params()?;
+        self.db
+            .run(move |conn| {
+                let params = params.clone();
+                async move { conn.execute(sql, params).await }
+            })
+            .await
+    }
+
+    /// Retrying `query` primitive: every read helper funnels through here so a
+    /// reclaimed Turso Hrana stream is transparently recovered (see [`Db::run`]).
+    async fn query(&self, sql: &str, params: impl IntoParams) -> DbResult<Rows> {
+        let params = params.into_params()?;
+        self.db
+            .run(move |conn| {
+                let params = params.clone();
+                async move { conn.query(sql, params).await }
+            })
+            .await
     }
 
     pub(crate) async fn query_all<T: FromRow>(
@@ -89,7 +107,7 @@ impl Repo {
         sql: &str,
         params: impl IntoParams,
     ) -> DbResult<Vec<T>> {
-        let mut rows = self.conn().query(sql, params).await?;
+        let mut rows = self.query(sql, params).await?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {
             out.push(T::from_row(&row)?);
@@ -102,7 +120,7 @@ impl Repo {
         sql: &str,
         params: impl IntoParams,
     ) -> DbResult<Option<T>> {
-        let mut rows = self.conn().query(sql, params).await?;
+        let mut rows = self.query(sql, params).await?;
         match rows.next().await? {
             Some(row) => Ok(Some(T::from_row(&row)?)),
             None => Ok(None),
@@ -110,7 +128,7 @@ impl Repo {
     }
 
     pub(crate) async fn scalar_i64(&self, sql: &str, params: impl IntoParams) -> DbResult<i64> {
-        let mut rows = self.conn().query(sql, params).await?;
+        let mut rows = self.query(sql, params).await?;
         let row = rows.next().await?.ok_or(libsql::Error::QueryReturnedNoRows)?;
         row.get::<i64>(0)
     }
@@ -120,7 +138,7 @@ impl Repo {
         sql: &str,
         params: impl IntoParams,
     ) -> DbResult<Option<i64>> {
-        let mut rows = self.conn().query(sql, params).await?;
+        let mut rows = self.query(sql, params).await?;
         match rows.next().await? {
             Some(row) => row.get::<Option<i64>>(0),
             None => Ok(None),
@@ -132,7 +150,7 @@ impl Repo {
         sql: &str,
         params: impl IntoParams,
     ) -> DbResult<Option<String>> {
-        let mut rows = self.conn().query(sql, params).await?;
+        let mut rows = self.query(sql, params).await?;
         match rows.next().await? {
             Some(row) => row.get::<Option<String>>(0),
             None => Ok(None),
@@ -144,7 +162,7 @@ impl Repo {
         sql: &str,
         params: impl IntoParams,
     ) -> DbResult<Vec<String>> {
-        let mut rows = self.conn().query(sql, params).await?;
+        let mut rows = self.query(sql, params).await?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {
             out.push(row.get::<String>(0)?);
@@ -157,7 +175,7 @@ impl Repo {
         sql: &str,
         params: impl IntoParams,
     ) -> DbResult<Vec<i64>> {
-        let mut rows = self.conn().query(sql, params).await?;
+        let mut rows = self.query(sql, params).await?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {
             out.push(row.get::<i64>(0)?);

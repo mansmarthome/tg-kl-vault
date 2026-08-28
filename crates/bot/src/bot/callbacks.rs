@@ -212,21 +212,31 @@ async fn handle_settings_callback(
             bot.edit_message_text(chat_id, message_id, current_lang.settings_title())
                 .reply_markup(settings_keyboard(current_lang))
                 .await?;
+            bot.answer_callback_query(query.id.clone()).await?;
             Ok(())
         }
         "opml" => {
             bot.edit_message_text(chat_id, message_id, current_lang.settings_opml_button())
                 .reply_markup(settings_opml_keyboard(current_lang))
                 .await?;
+            bot.answer_callback_query(query.id.clone()).await?;
             Ok(())
         }
         "opml:import" => {
             bot.edit_message_text(chat_id, message_id, current_lang.import_hint())
                 .reply_markup(settings_opml_keyboard(current_lang))
                 .await?;
+            bot.answer_callback_query(query.id.clone()).await?;
             Ok(())
         }
-        "opml:export" => export_chat_opml(bot, chat_id, owner_id, state).await,
+        // Sending the document does not clear the button's loading state — the
+        // callback query itself must be answered, or the button spins until it
+        // expires and the export looks like it did nothing.
+        "opml:export" => {
+            export_chat_opml(bot, chat_id, owner_id, state).await?;
+            bot.answer_callback_query(query.id.clone()).await?;
+            Ok(())
+        }
         "interval" => {
             bot.edit_message_text(chat_id, message_id, current_lang.interval_hint())
                 .reply_markup(settings_interval_keyboard(current_lang))

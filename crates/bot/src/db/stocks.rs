@@ -302,7 +302,7 @@ impl Repo {
         if bars.is_empty() {
             return Ok(());
         }
-        let tx = self.conn().transaction().await?;
+        let tx = self.db().begin().await?;
         for b in bars {
             tx.execute(
                 "INSERT INTO stock_bars \

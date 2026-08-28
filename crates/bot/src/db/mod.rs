@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::Context;
-use libsql::{Builder, Connection, Database, Row};
+use libsql::{Builder, Connection, Database, Row, Transaction};
 use tracing::{info, warn};
 
 /// Result alias for the DB layer. Kept as `libsql::Result` (rather than
@@ -41,15 +41,58 @@ impl FromRow for (String, i64) {
 /// sync task keeps running) plus one shared `Connection`. `Connection` is
 /// cheap to clone and serializes access internally, so a single one is enough
 /// for this bot's write-mostly, low-concurrency workload.
+///
+/// The connection lives behind an `RwLock` because a Turso `Connection` maps to
+/// a server-side Hrana *stream* that the remote reclaims after inactivity.
+/// Reusing that stale stream fails every call with a 404 `stream not found`,
+/// and the connection never heals itself. [`Db::run`]/[`Db::begin`] detect that
+/// error and swap in a fresh connection ([`Db::reconnect`]), so a single
+/// expired stream no longer wedges the whole bot.
 pub struct Db {
     _database: Database,
-    conn: Connection,
+    conn: std::sync::RwLock<Connection>,
     remote: bool,
 }
 
+/// Does this error message signal that a Turso Hrana stream was reclaimed by the
+/// remote? The transport surfaces it as an HTTP 404 whose body is
+/// `{"error":"stream not found: ..."}`; the cure is a fresh connection, not a
+/// retry on the same one. Kept as a `&str` predicate so it is unit-testable
+/// without constructing a `#[non_exhaustive]` `libsql::Error`.
+fn is_stale_stream_error(message: &str) -> bool {
+    message.contains("stream not found")
+}
+
+/// Run `op`; if it fails with a recoverable error, invoke `recover` once and run
+/// `op` a second time. Generic over the error type so the retry orchestration is
+/// unit-testable with a fake error, independent of any live database stream. A
+/// failing `recover` short-circuits: its error surfaces and `op` is not retried.
+async fn retry_once_if<T, E, Op, OpFut, Rec, RecFut>(
+    op: Op,
+    recoverable: impl Fn(&E) -> bool,
+    recover: Rec,
+) -> Result<T, E>
+where
+    Op: Fn() -> OpFut,
+    OpFut: std::future::Future<Output = Result<T, E>>,
+    Rec: FnOnce() -> RecFut,
+    RecFut: std::future::Future<Output = Result<(), E>>,
+{
+    match op().await {
+        Err(err) if recoverable(&err) => {
+            recover().await?;
+            op().await
+        }
+        other => other,
+    }
+}
+
 impl Db {
-    pub fn conn(&self) -> &Connection {
-        &self.conn
+    /// A clone of the current live connection. `Connection` is cheap to clone
+    /// (it is `Arc`-backed) and any `Rows`/`Transaction` it produces own their
+    /// own handles, so the returned clone can be dropped immediately.
+    pub fn conn(&self) -> Connection {
+        self.conn.read().expect("db connection lock poisoned").clone()
     }
 
     /// True when running as a Turso embedded replica (remote primary + local
@@ -63,6 +106,50 @@ impl Db {
             self._database.sync().await.context("libsql sync")?;
         }
         Ok(())
+    }
+
+    /// Open a fresh connection (a fresh Hrana stream when remote), re-apply the
+    /// per-connection pragmas, and publish it as the new shared connection.
+    async fn reconnect(&self) -> DbResult<Connection> {
+        let fresh = self._database.connect()?;
+        fresh
+            .execute_batch("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;")
+            .await?;
+        *self.conn.write().expect("db connection lock poisoned") = fresh.clone();
+        Ok(fresh)
+    }
+
+    /// Run a DB operation against the current connection, transparently
+    /// reconnecting and retrying once if the connection's Hrana stream expired.
+    pub(crate) async fn run<T, F, Fut>(&self, op: F) -> DbResult<T>
+    where
+        F: Fn(Connection) -> Fut,
+        Fut: std::future::Future<Output = DbResult<T>>,
+    {
+        retry_once_if(
+            || op(self.conn()),
+            |err: &libsql::Error| is_stale_stream_error(&err.to_string()),
+            || async {
+                warn!("libsql stream expired; reconnecting and retrying once");
+                self.reconnect().await.map(|_| ())
+            },
+        )
+        .await
+    }
+
+    /// Begin a transaction, reconnecting and retrying once if the connection's
+    /// Hrana stream expired at `BEGIN` time. (A stream that dies mid-transaction
+    /// cannot be recovered and surfaces to the caller as usual.)
+    pub(crate) async fn begin(&self) -> DbResult<Transaction> {
+        retry_once_if(
+            || async { self.conn().transaction().await },
+            |err: &libsql::Error| is_stale_stream_error(&err.to_string()),
+            || async {
+                warn!("libsql stream expired; reconnecting before transaction");
+                self.reconnect().await.map(|_| ())
+            },
+        )
+        .await
     }
 }
 
@@ -182,11 +269,11 @@ pub async fn connect(path: &str) -> anyhow::Result<Arc<Db>> {
         .await
         .context("apply pragmas")?;
 
-    let db = Db { _database: database, conn, remote };
+    let db = Db { _database: database, conn: std::sync::RwLock::new(conn), remote };
     if remote {
         db.sync().await?;
     }
-    run_migrations(&db.conn).await.context("run migrations")?;
+    run_migrations(&db.conn()).await.context("run migrations")?;
     Ok(Arc::new(db))
 }
 
@@ -313,7 +400,7 @@ mod tests {
         // migrations 1-4 applied and recorded.
         {
             let db = connect(path).await.unwrap();
-            db.conn
+            db.conn()
                 .execute_batch(
                     "ALTER TABLE sources DROP COLUMN last_error; \
                      ALTER TABLE sources DROP COLUMN last_error_at; \
@@ -329,7 +416,7 @@ mod tests {
         for pass in 1..=2 {
             let db = connect(path).await.unwrap();
             let mut rows = db
-                .conn
+                .conn()
                 .query(
                     "SELECT title, error_count, last_error, last_success_at FROM sources",
                     (),
@@ -358,7 +445,7 @@ mod tests {
         // Stand up a pre-0006 database: drop the stock tables and un-record 6.
         {
             let db = connect(path).await.unwrap();
-            db.conn
+            db.conn()
                 .execute_batch(
                     "DROP TABLE stock_watchlist; DROP TABLE stock_meta; \
                      DROP TABLE stock_bars; DROP TABLE stock_push_settings; \
@@ -372,7 +459,7 @@ mod tests {
         // First reopen applies 0006 and lets us insert a row.
         {
             let db = connect(path).await.unwrap();
-            db.conn
+            db.conn()
                 .execute(
                     "INSERT INTO stock_watchlist \
                      (chat_id, created_by, symbol, market, created_at, updated_at) \
@@ -387,7 +474,7 @@ mod tests {
         {
             let db = connect(path).await.unwrap();
             let n: i64 = db
-                .conn
+                .conn()
                 .query("SELECT COUNT(*) FROM stock_watchlist", ())
                 .await
                 .unwrap()
@@ -399,5 +486,123 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 1, "the row must survive the second open");
         }
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    #[test]
+    fn stale_stream_detection_matches_the_real_hrana_404_body() {
+        // The exact shape libsql surfaces when Turso reclaims the stream.
+        assert!(is_stale_stream_error(
+            "Hrana: `api error: `status=404 Not Found, \
+             body={\"error\":\"stream not found: ed4c194d:31b861a\"}``"
+        ));
+    }
+
+    #[test]
+    fn stale_stream_detection_ignores_unrelated_errors() {
+        assert!(!is_stale_stream_error(
+            "Hrana: `api error: `status=500 Internal Server Error``"
+        ));
+        assert!(!is_stale_stream_error("no more rows"));
+    }
+
+    #[tokio::test]
+    async fn retry_once_if_recovers_then_retries_a_recoverable_error() {
+        let attempts = AtomicUsize::new(0);
+        let recoveries = AtomicUsize::new(0);
+        let result: Result<u64, &str> = retry_once_if(
+            || {
+                let attempt = attempts.fetch_add(1, SeqCst);
+                async move {
+                    if attempt == 0 {
+                        Err("stream not found: x")
+                    } else {
+                        Ok(9)
+                    }
+                }
+            },
+            |err: &&str| err.contains("stream not found"),
+            || {
+                recoveries.fetch_add(1, SeqCst);
+                async move { Ok(()) }
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap(), 9);
+        assert_eq!(attempts.load(SeqCst), 2, "op runs twice: once, then the retry");
+        assert_eq!(recoveries.load(SeqCst), 1, "recover runs exactly once");
+    }
+
+    #[tokio::test]
+    async fn retry_once_if_passes_through_unrecoverable_errors_without_retrying() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<u64, &str> = retry_once_if(
+            || {
+                attempts.fetch_add(1, SeqCst);
+                async move { Err("some other failure") }
+            },
+            |err: &&str| err.contains("stream not found"),
+            || async move { Ok(()) },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "some other failure");
+        assert_eq!(attempts.load(SeqCst), 1, "unrecoverable errors are not retried");
+    }
+
+    #[tokio::test]
+    async fn retry_once_if_surfaces_a_failed_recovery_and_does_not_retry_op() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<u64, &str> = retry_once_if(
+            || {
+                attempts.fetch_add(1, SeqCst);
+                async move { Err("stream not found") }
+            },
+            |_err: &&str| true,
+            || async move { Err("reconnect failed") },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "reconnect failed");
+        assert_eq!(attempts.load(SeqCst), 1, "op is not retried when recovery fails");
+    }
+
+    #[tokio::test]
+    async fn run_executes_against_the_live_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = connect(dir.path().join("data.db").to_str().unwrap()).await.unwrap();
+        // Exercises the real run() + conn() clone path, and confirms the Rows
+        // outlive the temporary connection clone dropped inside the closure.
+        let n: i64 = db
+            .run(|conn| async move {
+                let mut rows = conn.query("SELECT 42", ()).await?;
+                rows.next().await?.unwrap().get::<i64>(0)
+            })
+            .await
+            .unwrap();
+        assert_eq!(n, 42);
+    }
+
+    #[tokio::test]
+    async fn reconnect_swaps_in_a_working_connection_on_the_same_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = connect(dir.path().join("data.db").to_str().unwrap()).await.unwrap();
+        db.conn().execute("CREATE TABLE t (x INTEGER)", ()).await.unwrap();
+
+        db.reconnect().await.unwrap();
+
+        // The post-reconnect connection sees the same database and works.
+        db.conn().execute("INSERT INTO t (x) VALUES (1)", ()).await.unwrap();
+        let n: i64 = db
+            .conn()
+            .query("SELECT COUNT(*) FROM t", ())
+            .await
+            .unwrap()
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }
