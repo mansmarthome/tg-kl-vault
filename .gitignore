@@ -251,6 +251,9 @@ __pycache__/*
 config.yml
 flowerss-bot
 
+config.toml
+.kilo/
+
 *.db
 .dockerfile
 *.db-shm
