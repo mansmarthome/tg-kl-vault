@@ -112,7 +112,7 @@ impl Repo {
         sqlx::query(
             "INSERT INTO subscribes \
              (user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at) \
-             VALUES (?, ?, 1, 1, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+             VALUES (?, ?, 1, 0, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
         .bind(user_id)
         .bind(source_id)
