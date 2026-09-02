@@ -2,6 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 use flowerss_bot::{
     bot::{
+        client::{build_bot, should_run_dispatcher},
         runtime::run_bot,
         sender::{NoopSender, TeloxideSender},
     },
@@ -12,7 +13,6 @@ use flowerss_bot::{
     preview::{NoopPublisher, TelegraphPublisher},
     scheduler::{Scheduler, SchedulerOptions},
 };
-use teloxide::Bot;
 use tokio::sync::watch;
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -23,10 +23,16 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load(args.config.as_deref()).context("load config")?;
     init_tracing(&config.log.level)?;
 
-    info!(dry_run = args.dry_run, sqlite_path = %config.sqlite.path, "tg-kl-vault starting");
+    info!(
+        dry_run = args.dry_run,
+        sqlite_path = %config.sqlite.path,
+        telegram_mode = ?config.telegram.mode,
+        telegram_endpoint_set = !config.telegram.endpoint.is_empty(),
+        "tg-kl-vault starting"
+    );
     println!(
-        "config loaded: sqlite_path={} update_interval={} dry_run={}",
-        config.sqlite.path, config.update_interval, args.dry_run
+        "config loaded: sqlite_path={} update_interval={} dry_run={} telegram.mode={:?}",
+        config.sqlite.path, config.update_interval, args.dry_run, config.telegram.mode
     );
 
     let pool = db::connect(&config.sqlite.path).await.context("connect sqlite")?;
@@ -49,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     if config.bot_token.is_empty() {
         anyhow::bail!("bot_token is required unless --dry-run is used");
     }
-    let bot = Bot::new(config.bot_token.clone());
+    let bot = build_bot(&config).await.context("build telegram bot")?;
 
     let scheduler = Scheduler::new(
         repo.clone(),
@@ -72,15 +78,24 @@ async fn main() -> anyhow::Result<()> {
     let scheduler_rx = shutdown_rx.clone();
     let scheduler_task = tokio::spawn(async move { scheduler.run_until_shutdown(scheduler_rx).await });
 
-    let bot_rx = shutdown_rx.clone();
-    let bot_task = tokio::spawn(async move { run_bot(bot, config, repo, fetcher, bot_rx).await });
+    if should_run_dispatcher(config.telegram.mode) {
+        let bot_rx = shutdown_rx.clone();
+        let bot_task = tokio::spawn(async move { run_bot(bot, config, repo, fetcher, bot_rx).await });
+        let (scheduler_result, bot_result) = tokio::try_join!(scheduler_task, bot_task)
+            .context("join scheduler + dispatcher")?;
+        scheduler_result.context("run scheduler")?;
+        bot_result.context("run bot")?;
+    } else {
+        info!(
+            "Inbound Telegram updates are disabled. Commands and buttons will not work until mode=polling."
+        );
+        scheduler_task.await.context("join scheduler")?.context("run scheduler")?;
+    }
 
-    let (scheduler_result, bot_result) = tokio::try_join!(scheduler_task, bot_task).context("join tasks")?;
-    scheduler_result.context("run scheduler")?;
-    bot_result.context("run bot")?;
     signal_task.abort();
     Ok(())
 }
+
 
 async fn wait_for_shutdown_signal() {
     let ctrl_c = async {

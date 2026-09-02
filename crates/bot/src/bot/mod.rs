@@ -1,5 +1,6 @@
 pub mod callback;
 pub mod callbacks;
+pub mod client;
 pub mod commands;
 pub mod documents;
 pub mod html_format;

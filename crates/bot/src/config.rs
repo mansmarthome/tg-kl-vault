@@ -6,6 +6,24 @@ use figment::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Telegram connection mode (HA-style: polling default, broadcast for send-only).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TelegramMode {
+    /// Long-poll `getUpdates` + inbound command/callback dispatcher + outbound
+    /// sends. This is the default and matches the original `flowerss-bot`
+    /// behavior.
+    #[default]
+    Polling,
+    /// Outbound only: scheduler and workers still send messages, but no
+    /// `Dispatcher` runs, so `/sub`, `/check`, inline buttons, and document
+    /// imports stop working. Use this for steady-state operation behind a
+    /// self-hosted Bot API when no inbound commands are needed.
+    Broadcast,
+    // `Webhook` is intentionally not part of v1. See `TelegramMode` docs
+    // above and the polling-broadcast plan for the non-goal.
+}
+
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36";
 pub const DEFAULT_UPDATE_INTERVAL_MINUTES: u64 = 10;
@@ -77,6 +95,7 @@ impl Config {
         set_parse(&mut self.disable_web_page_preview, "FLOWERSS_DISABLE_WEB_PAGE_PREVIEW")?;
         set_string(&mut self.sqlite.path, "FLOWERSS_SQLITE_PATH");
         set_string(&mut self.telegram.endpoint, "FLOWERSS_TELEGRAM_ENDPOINT");
+        set_string_mode(&mut self.telegram.mode, "FLOWERSS_TELEGRAM_MODE")?;
         set_string(&mut self.log.level, "FLOWERSS_LOG_LEVEL");
         set_parse(&mut self.fetch.concurrency, "FLOWERSS_FETCH_CONCURRENCY")?;
         set_parse(&mut self.fetch.retention_days, "FLOWERSS_FETCH_RETENTION_DAYS")?;
@@ -87,6 +106,22 @@ impl Config {
 fn set_string(target: &mut String, key: &str) {
     if let Ok(value) = env::var(key) {
         *target = value;
+    }
+}
+
+fn set_string_mode(target: &mut TelegramMode, key: &str) -> anyhow::Result<()> {
+    if let Ok(value) = env::var(key) {
+        *target = parse_telegram_mode(&value)
+            .ok_or_else(|| anyhow::anyhow!("invalid {key}: {value:?} (expected polling or broadcast)"))?;
+    }
+    Ok(())
+}
+
+fn parse_telegram_mode(raw: &str) -> Option<TelegramMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "polling" => Some(TelegramMode::Polling),
+        "broadcast" => Some(TelegramMode::Broadcast),
+        _ => None,
     }
 }
 
@@ -150,7 +185,13 @@ impl Default for SqliteConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default)]
 pub struct TelegramConfig {
+    /// Official API or self-hosted Bot API base, e.g.
+    /// `http://telegram-bot-api:8081`. Empty means the official
+    /// `https://api.telegram.org`.
     pub endpoint: String,
+    /// `polling` (default) | `broadcast`. Unknown values fail to parse so a
+    /// typo in the config does not silently fall back to polling.
+    pub mode: TelegramMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -212,6 +253,7 @@ mod tests {
             ("FLOWERSS_DISABLE_WEB_PAGE_PREVIEW", "true"),
             ("FLOWERSS_SQLITE_PATH", "/tmp/flowerss.db"),
             ("FLOWERSS_TELEGRAM_ENDPOINT", "https://telegram.example"),
+            ("FLOWERSS_TELEGRAM_MODE", "broadcast"),
             ("FLOWERSS_LOG_LEVEL", "debug"),
             ("FLOWERSS_FETCH_CONCURRENCY", "3"),
             ("FLOWERSS_FETCH_RETENTION_DAYS", "14"),
@@ -233,6 +275,7 @@ mod tests {
         assert!(cfg.disable_web_page_preview);
         assert_eq!(cfg.sqlite.path, "/tmp/flowerss.db");
         assert_eq!(cfg.telegram.endpoint, "https://telegram.example");
+        assert_eq!(cfg.telegram.mode, TelegramMode::Broadcast);
         assert_eq!(cfg.log.level, "debug");
         assert_eq!(cfg.fetch.concurrency, 3);
         assert_eq!(cfg.fetch.retention_days, 14);
@@ -240,5 +283,76 @@ mod tests {
         for (key, _) in keys {
             std::env::remove_var(key);
         }
+    }
+
+    #[test]
+    fn default_mode_is_polling() {
+        let cfg = Config::default();
+        assert_eq!(cfg.telegram.mode, TelegramMode::Polling);
+        assert_eq!(TelegramMode::default(), TelegramMode::Polling);
+    }
+
+    #[test]
+    fn toml_mode_parses_polling_and_broadcast() {
+        let toml = r#"
+[telegram]
+mode = "broadcast"
+"#;
+        let figment = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml));
+        let cfg: Config = figment.extract().unwrap();
+        assert_eq!(cfg.telegram.mode, TelegramMode::Broadcast);
+
+        let toml = r#"
+[telegram]
+mode = "polling"
+"#;
+        let figment = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml));
+        let cfg: Config = figment.extract().unwrap();
+        assert_eq!(cfg.telegram.mode, TelegramMode::Polling);
+    }
+
+    #[test]
+    fn toml_mode_rejects_unknown_value() {
+        let toml = r#"
+[telegram]
+mode = "webhook"
+"#;
+        let figment = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml));
+        let err = figment.extract::<Config>().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("telegram") && msg.contains("webhook"),
+            "expected an error mentioning telegram/webhook, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn env_mode_overrides_toml() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FLOWERSS_TELEGRAM_MODE", "broadcast");
+        let mut cfg = Config::load(None).unwrap();
+        // Sanity: env-driven mode wins.
+        assert_eq!(cfg.telegram.mode, TelegramMode::Broadcast);
+        // Clearing the env var should fall back to default (Polling).
+        std::env::remove_var("FLOWERSS_TELEGRAM_MODE");
+        cfg = Config::load(None).unwrap();
+        assert_eq!(cfg.telegram.mode, TelegramMode::Polling);
+    }
+
+    #[test]
+    fn env_mode_rejects_unknown_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FLOWERSS_TELEGRAM_MODE", "nope");
+        let result = Config::load(None);
+        std::env::remove_var("FLOWERSS_TELEGRAM_MODE");
+        let err = result.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("FLOWERSS_TELEGRAM_MODE") && msg.contains("nope"),
+            "expected env-var error mentioning FLOWERSS_TELEGRAM_MODE/nope, got: {msg}"
+        );
     }
 }

@@ -17,7 +17,15 @@ disable_web_page_preview = false
 path = "./data.db"
 
 [telegram]
+# Custom Telegram Bot API base URL, e.g. "http://telegram-bot-api:8081".
+# Leave empty to use the official https://api.telegram.org.
 endpoint = ""
+# Connection mode: "polling" (default) or "broadcast".
+#   polling   - long-poll getUpdates + command/callback dispatcher + outbound sends.
+#   broadcast - outbound sends only; no getUpdates, no commands, no buttons.
+#               Use this for steady-state operation behind a self-hosted Bot API.
+#               Switch back to "polling" to manage subscriptions.
+mode = "polling"
 
 [log]
 level = "info"

@@ -13,6 +13,7 @@ This repository is a Rust rewrite derived from the original [`indes/flowerss-bot
 - Inline buttons for subscription settings and unsubscribe flows.
 - SOCKS5 proxy support for feed fetching.
 - Optional custom Telegram Bot API endpoint.
+- Two Telegram connection modes: `polling` (default, long-poll `getUpdates` + command/callback dispatcher) and `broadcast` (outbound sends only, no `getUpdates` and no inbound commands).
 - Docker / Docker Compose deployment.
 - Runtime configuration through TOML and environment variables.
 
@@ -119,6 +120,8 @@ path = "/app/data/data.db"
 
 [telegram]
 endpoint = ""
+# "polling" (default) or "broadcast" — see "Telegram connection modes" below.
+mode = "polling"
 
 [log]
 level = "info"
@@ -139,6 +142,7 @@ Important fields:
 | `disable_web_page_preview` | Disable Telegram link previews when sending messages. |
 | `sqlite.path` | SQLite database path. In Docker Compose, use `/app/data/data.db`. |
 | `telegram.endpoint` | Optional custom Telegram Bot API server endpoint. Empty means official Telegram API. |
+| `telegram.mode` | Telegram connection mode: `polling` (default) or `broadcast`. See "Telegram connection modes" below. |
 | `log.level` | Tracing log level, for example `error`, `warn`, `info`, `debug`, `trace`. |
 | `fetch.concurrency` | Number of feeds fetched concurrently. |
 | `fetch.retention_days` | Delete old content rows after this many days while keeping recent dedup baseline rows. |
@@ -194,11 +198,35 @@ Every config value can be supplied through environment variables with the `FLOWE
 | `FLOWERSS_DISABLE_WEB_PAGE_PREVIEW` | `disable_web_page_preview` | `false` |
 | `FLOWERSS_SQLITE_PATH` | `sqlite.path` | `/app/data/data.db` |
 | `FLOWERSS_TELEGRAM_ENDPOINT` | `telegram.endpoint` | `https://api.telegram.org` |
+| `FLOWERSS_TELEGRAM_MODE` | `telegram.mode` | `broadcast` |
 | `FLOWERSS_LOG_LEVEL` | `log.level` | `info` |
 | `FLOWERSS_FETCH_CONCURRENCY` | `fetch.concurrency` | `8` |
 | `FLOWERSS_FETCH_RETENTION_DAYS` | `fetch.retention_days` | `90` |
 
 List values accept comma-separated values. Bracketed forms also work, for example `FLOWERSS_ALLOWED_USERS="[123,-100]"`.
+
+### 5.1 Telegram connection modes
+
+The bot has two connection modes, controlled by `telegram.mode` (or `FLOWERSS_TELEGRAM_MODE`):
+
+| Mode | Default | Inbound `getUpdates`? | Outbound sends? | Commands / buttons? |
+|---|---|---|---|---|
+| `polling` | yes | yes | yes | yes |
+| `broadcast` | no | no | yes | **no** |
+
+`polling` is the original `flowerss-bot` behavior: the bot long-polls `getUpdates`, dispatches commands, handles inline-button callbacks, and accepts OPML document imports. Use this for setup, subscription management, and any chat where users interact with the bot.
+
+`broadcast` runs only the scheduler and outbound senders. **No `getUpdates` is issued**, so `/sub`, `/check`, `/settings`, inline buttons, OPML import via document, and ForceReply prompts do not work. This is the right fit for steady-state operation behind a self-hosted Bot API when no inbound traffic is expected — it avoids the persistent `getUpdates` connection against your self-hosted server.
+
+Recommended workflow:
+
+1. Start with `mode = "polling"`, subscribe and tune settings, verify one push.
+2. Flip to `mode = "broadcast"`, restart. Scheduler/tag/stock workers continue delivering feed updates.
+3. To manage subscriptions again, set `mode = "polling"`, restart, then optionally flip back.
+
+On startup in `polling` mode, the bot best-effort calls `deleteWebhook` so a leftover webhook from a previous deployment does not conflict with long-polling. Unknown mode values fail to start with a clear error; the bot does not silently fall back to `polling`.
+
+The mode is also logged at startup together with whether a custom `telegram.endpoint` is configured.
 
 ### 6. Run with Docker Compose
 
