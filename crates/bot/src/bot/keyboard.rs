@@ -11,6 +11,7 @@ pub fn feed_item_list_keyboard(
     button: Button,
     user_id: i64,
     sources: &[(i64, String)],
+    lang: Lang,
 ) -> InlineKeyboardMarkup {
     let rows = sources
         .iter()
@@ -20,7 +21,7 @@ pub fn feed_item_list_keyboard(
                 source_id: *source_id as u32,
             };
             vec![InlineKeyboardButton::callback(
-                format!("[{source_id}] {title}"),
+                lang.feed_item_button(*source_id, title),
                 encode_telebot_callback(button, attachment),
             )]
         })
@@ -37,21 +38,22 @@ pub fn feed_setting_keyboard(
     error_threshold: i64,
     enable_notification: Option<i64>,
     enable_telegraph: Option<i64>,
+    lang: Lang,
 ) -> InlineKeyboardMarkup {
     let toggle_update_text = if source_error_count >= error_threshold {
-        "重启更新"
+        lang.set_toggle_update()
     } else {
-        "暂停更新"
+        lang.set_toggle_pause()
     };
     let toggle_notice_text = if enable_notification == Some(1) {
-        "关闭通知"
+        lang.set_toggle_notice_off()
     } else {
-        "开启通知"
+        lang.set_toggle_notice_on()
     };
     let toggle_telegraph_text = if enable_telegraph == Some(1) {
-        "关闭 Telegraph 转码"
+        lang.set_toggle_telegraph_off()
     } else {
-        "开启 Telegraph 转码"
+        lang.set_toggle_telegraph_on()
     };
 
     InlineKeyboardMarkup::new(vec![
@@ -71,7 +73,7 @@ pub fn feed_setting_keyboard(
                 encode_telebot_callback(Button::SetToggleTelegraph, attachment),
             ),
             InlineKeyboardButton::callback(
-                "标签设置",
+                lang.set_tag_button(),
                 encode_telebot_callback(Button::SetSetSubTag, attachment),
             ),
         ],
@@ -81,18 +83,18 @@ pub fn feed_setting_keyboard(
 /// Go's `RemoveAllSubscription.Handle` sends confirm/cancel buttons with no
 /// attachment payload at all (`Data` is left unset), so the callback handler
 /// authorizes off the callback sender directly rather than an embedded id.
-pub fn unsuball_confirm_keyboard() -> InlineKeyboardMarkup {
+pub fn unsuball_confirm_keyboard(lang: Lang) -> InlineKeyboardMarkup {
     let empty = Attachment {
         user_id: 0,
         source_id: 0,
     };
     InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback(
-            "确认",
+            lang.unsuball_confirm_label(),
             encode_telebot_callback(Button::UnsubAllConfirm, empty),
         ),
         InlineKeyboardButton::callback(
-            "取消",
+            lang.unsuball_cancel_label(),
             encode_telebot_callback(Button::UnsubAllCancel, empty),
         ),
     ]])
@@ -131,9 +133,19 @@ pub fn settings_opml_keyboard(lang: Lang) -> InlineKeyboardMarkup {
 pub fn settings_language_keyboard(lang: Lang) -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![
         vec![
-            InlineKeyboardButton::callback("English", "settings:language:en"),
-            InlineKeyboardButton::callback("繁體中文", "settings:language:zh-tw"),
+            InlineKeyboardButton::callback(
+                lang.settings_language_english_label(),
+                "settings:language:en",
+            ),
+            InlineKeyboardButton::callback(
+                lang.settings_language_zh_label(),
+                "settings:language:zh-tw",
+            ),
         ],
+        vec![InlineKeyboardButton::callback(
+            lang.settings_language_ru_label(),
+            "settings:language:ru",
+        )],
         vec![InlineKeyboardButton::callback(
             lang.settings_back_button(),
             "settings:back",

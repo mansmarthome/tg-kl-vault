@@ -5,60 +5,83 @@ use teloxide::utils::command::BotCommands;
 #[derive(Debug, Clone, PartialEq, Eq, BotCommands)]
 #[command(rename_rule = "lowercase")]
 pub enum Command {
-    #[command(description = "开始使用")]
+    #[command(description = "Start using the bot")]
     Start,
-    #[command(description = "订阅RSS源")]
+    #[command(description = "Subscribe to an RSS feed")]
     Sub(String),
-    #[command(description = "退订RSS源")]
+    #[command(description = "Unsubscribe")]
     Unsub(String),
-    #[command(description = "已订阅的RSS源")]
+    #[command(description = "Show current subscriptions")]
     List,
-    #[command(description = "设置订阅")]
+    #[command(description = "Configure a subscription")]
     Set,
-    #[command(description = "设置")]
+    #[command(description = "Bot settings")]
     Settings,
-    #[command(description = "检查当前订阅")]
+    #[command(description = "Check current subscriptions")]
     Check,
-    #[command(description = "设置rss订阅标签")]
+    #[command(description = "Set tags for a subscription")]
     Setfeedtag(String),
-    #[command(description = "取消所有订阅")]
+    #[command(description = "Remove all subscriptions")]
     Unsuball,
-    #[command(description = "开启抓取订阅更新")]
+    #[command(description = "Enable all subscriptions")]
     Activeall,
-    #[command(description = "停止抓取所有订阅更新")]
+    #[command(description = "Pause all subscriptions")]
     Pauseall,
     #[command(description = "")]
     Ping,
-    #[command(description = "帮助")]
+    #[command(description = "Help")]
     Help,
-    #[command(description = "Bot 版本信息")]
+    #[command(description = "Bot version")]
     Version,
 }
 
+/// Command names (without descriptions) used to register the bot command
+/// list. Descriptions are looked up per-locale from `Lang::command_descriptions`.
+pub const COMMAND_NAMES: &[&str] = &[
+    "start",
+    "sub",
+    "unsub",
+    "list",
+    "set",
+    "settings",
+    "check",
+    "setfeedtag",
+    "unsuball",
+    "activeall",
+    "pauseall",
+    "ping",
+    "help",
+    "version",
+];
+
+/// Backwards-compat constant retained for `commands_list_matches_overview`.
+/// Only the names are used by `run_bot` now; descriptions come from
+/// `Lang::command_descriptions` so the bot menu follows the per-chat language.
 pub const COMMANDS: &[(&str, &str)] = &[
-    ("start", "开始使用"),
-    ("sub", "订阅RSS源"),
-    ("unsub", "退订RSS源"),
-    ("list", "已订阅的RSS源"),
-    ("set", "设置订阅"),
-    ("settings", "设置"),
-    ("check", "检查当前订阅"),
-    ("setfeedtag", "设置rss订阅标签"),
-    ("unsuball", "取消所有订阅"),
-    ("activeall", "开启抓取订阅更新"),
-    ("pauseall", "停止抓取所有订阅更新"),
+    ("start", "Start using the bot"),
+    ("sub", "Subscribe to an RSS feed"),
+    ("unsub", "Unsubscribe"),
+    ("list", "Show current subscriptions"),
+    ("set", "Configure a subscription"),
+    ("settings", "Bot settings"),
+    ("check", "Check current subscriptions"),
+    ("setfeedtag", "Set tags for a subscription"),
+    ("unsuball", "Remove all subscriptions"),
+    ("activeall", "Enable all subscriptions"),
+    ("pauseall", "Pause all subscriptions"),
     ("ping", ""),
-    ("help", "帮助"),
-    ("version", "Bot 版本信息"),
+    ("help", "Help"),
+    ("version", "Bot version"),
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bot::i18n::Lang;
 
     #[test]
     fn command_list_matches_overview() {
-        let names = COMMANDS.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        let names = COMMAND_NAMES.to_vec();
         assert_eq!(
             names,
             vec![
@@ -79,5 +102,16 @@ mod tests {
             ]
         );
         assert!(names.contains(&"check"));
+    }
+
+    #[test]
+    fn command_descriptions_cover_all_languages() {
+        for lang in [Lang::En, Lang::ZhTw, Lang::Ru] {
+            let descriptions = lang.command_descriptions();
+            assert_eq!(descriptions.len(), COMMAND_NAMES.len());
+            for (i, name) in COMMAND_NAMES.iter().enumerate() {
+                assert_eq!(descriptions[i].0, *name);
+            }
+        }
     }
 }

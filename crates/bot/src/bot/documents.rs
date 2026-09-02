@@ -4,7 +4,7 @@ use futures::StreamExt;
 use teloxide::{net::Download, prelude::*, types::ParseMode};
 
 use crate::{
-    bot::{runtime::BotState, subscribe::create_source},
+    bot::{runtime::{chat_lang, BotState}, subscribe::create_source},
     opml::{import_opml, OpmlSource},
 };
 
@@ -12,18 +12,19 @@ use crate::{
 /// document is treated as a bulk-subscribe request (no `/import` argument
 /// needed — `/import` itself only prints instructions, see `commands.rs`).
 pub async fn handle_document(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, msg.chat.id.0).await;
     let Some(document) = msg.document() else { return Ok(()) };
 
     let is_opml = document.file_name.as_deref().is_some_and(|name| name.ends_with(".opml"));
     if !is_opml {
-        bot.send_message(msg.chat.id, "请发送正确的 OPML 文件").await?;
+        bot.send_message(msg.chat.id, lang.opml_wrong_file()).await?;
         return Ok(());
     }
 
     let bytes = match download_document(&bot, document.file.id.clone()).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            bot.send_message(msg.chat.id, "获取文件失败").await?;
+            bot.send_message(msg.chat.id, lang.opml_download_failed()).await?;
             return Ok(());
         }
     };
@@ -31,7 +32,7 @@ pub async fn handle_document(bot: Bot, msg: Message, state: Arc<BotState>) -> Re
     let outlines = match import_opml(&String::from_utf8_lossy(&bytes)) {
         Ok(outlines) => outlines,
         Err(_) => {
-            bot.send_message(msg.chat.id, "获取文件失败").await?;
+            bot.send_message(msg.chat.id, lang.opml_download_failed()).await?;
             return Ok(());
         }
     };
@@ -52,7 +53,7 @@ pub async fn handle_document(bot: Bot, msg: Message, state: Arc<BotState>) -> Re
         }
     }
 
-    let text = render_import_report(&success, &failed);
+    let text = render_import_report(&success, &failed, lang);
     bot.send_message(msg.chat.id, text).parse_mode(ParseMode::Html).await?;
     Ok(())
 }
@@ -67,18 +68,17 @@ async fn download_document(bot: &Bot, file_id: teloxide::types::FileId) -> anyho
     Ok(bytes)
 }
 
-/// Byte-for-byte port of the report built in `OnDocument.Handle`.
-fn render_import_report(success: &[OpmlSource], failed: &[OpmlSource]) -> String {
-    let mut out = format!("<b>导入成功：{}，导入失败：{}</b>\n", success.len(), failed.len());
+fn render_import_report(success: &[OpmlSource], failed: &[OpmlSource], lang: crate::bot::i18n::Lang) -> String {
+    let mut out = lang.opml_import_header_msg(success.len(), failed.len());
     if !success.is_empty() {
-        out.push_str("<b>以下订阅源导入成功:</b>\n");
+        out.push_str(lang.opml_import_success_header());
         for (i, outline) in success.iter().enumerate() {
             push_outline_line(&mut out, i + 1, outline);
         }
         out.push('\n');
     }
     if !failed.is_empty() {
-        out.push_str("<b>以下订阅源导入失败:</b>\n");
+        out.push_str(lang.opml_import_failed_header());
         for (i, outline) in failed.iter().enumerate() {
             push_outline_line(&mut out, i + 1, outline);
         }

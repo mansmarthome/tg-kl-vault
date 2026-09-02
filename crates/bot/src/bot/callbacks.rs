@@ -46,7 +46,8 @@ pub async fn handle_callback(
         Ok(callback) => callback,
         Err(err) => {
             warn!(error = %err, "failed to decode callback data");
-            respond_toast(&bot, &query, "系统错误！").await?;
+            let lang = chat_lang(&state.repo, chat_id.0).await;
+            respond_toast(&bot, &query, lang.system_error_exclaim()).await?;
             return Ok(());
         }
     };
@@ -97,7 +98,8 @@ pub async fn handle_callback(
             .await
         }
         Button::SetSetSubTag => {
-            handle_set_sub_tag(&bot, &query, callback.attachment, chat_id, message_id).await
+            handle_set_sub_tag(&bot, &state, &query, callback.attachment, chat_id, message_id)
+                .await
         }
         Button::UnsubFeedItem => {
             handle_unsub_feed_item(&bot, &state, callback.attachment, chat_id, message_id).await
@@ -105,7 +107,10 @@ pub async fn handle_callback(
         Button::UnsubAllConfirm => {
             handle_unsuball_confirm(&bot, &state, &query, chat_id, message_id).await
         }
-        Button::UnsubAllCancel => handle_unsuball_cancel(&bot, chat_id, message_id).await,
+        Button::UnsubAllCancel => {
+            let lang = chat_lang(&state.repo, chat_id.0).await;
+            handle_unsuball_cancel(&bot, chat_id, message_id, lang).await
+        }
     }
 }
 
@@ -164,7 +169,7 @@ async fn handle_settings_callback(
                 .await?;
             Ok(())
         }
-        "opml:export" => export_chat_opml(bot, chat_id, owner_id, state).await,
+        "opml:export" => export_chat_opml(bot, chat_id, owner_id, state, current_lang).await,
         "interval" => {
             bot.edit_message_text(chat_id, message_id, current_lang.interval_hint())
                 .reply_markup(settings_interval_keyboard(current_lang))
@@ -176,17 +181,19 @@ async fn handle_settings_callback(
                 .strip_prefix("interval:")
                 .and_then(|v| v.parse::<i64>().ok())
             else {
-                return respond_toast(bot, query, "error").await;
+                return respond_toast(bot, query, current_lang.toast_error()).await;
             };
             match state
                 .repo
                 .set_all_subscription_interval(owner_id, minutes)
                 .await
             {
-                Ok(count) => respond_toast(bot, query, &current_lang.interval_updated(count)).await,
+                Ok(count) => {
+                    respond_toast(bot, query, &current_lang.interval_updated(count)).await
+                }
                 Err(err) => {
                     warn!(owner_id, minutes, error = %err, "failed to set interval");
-                    respond_toast(bot, query, "error").await
+                    respond_toast(bot, query, current_lang.toast_error()).await
                 }
             }
         }
@@ -196,23 +203,26 @@ async fn handle_settings_callback(
                 .await?;
             Ok(())
         }
-        "language:en" | "language:zh-tw" => {
+        "language:en" | "language:zh-tw" | "language:ru" => {
             let lang = if action.ends_with("en") {
                 Lang::En
-            } else {
+            } else if action.ends_with("zh-tw") {
                 Lang::ZhTw
+            } else {
+                Lang::Ru
             };
             if let Err(err) = set_chat_lang(&state.repo, owner_id, lang).await {
                 warn!(owner_id, error = %err, "failed to set language");
-                return respond_toast(bot, query, "error").await;
+                return respond_toast(bot, query, current_lang.toast_error()).await;
             }
-            respond_toast(bot, query, lang.lang_updated()).await?;
+            // Use the *new* language for the confirmation toast.
+            respond_toast(bot, query, lang.lang_updated(lang)).await?;
             bot.edit_message_text(chat_id, message_id, lang.settings_title())
                 .reply_markup(settings_keyboard(lang))
                 .await?;
             Ok(())
         }
-        _ => respond_toast(bot, query, "error").await,
+        _ => respond_toast(bot, query, current_lang.toast_error()).await,
     }
 }
 
@@ -223,8 +233,9 @@ async fn render_and_edit_setting(
     source: &Source,
     sub: &Subscribe,
     attachment: Attachment,
+    lang: Lang,
 ) -> ResponseResult<()> {
-    let text = render_feed_setting(&FeedSettingData {
+    let data = FeedSettingData {
         source_id: source.id,
         source_title: source.title.as_deref().unwrap_or(""),
         source_link: source.link.as_deref().unwrap_or(""),
@@ -234,13 +245,15 @@ async fn render_and_edit_setting(
         enable_notification: sub.enable_notification,
         enable_telegraph: sub.enable_telegraph,
         tag: sub.tag.as_deref().unwrap_or(""),
-    });
+    };
+    let text = render_feed_setting(lang, &data);
     let keyboard = feed_setting_keyboard(
         attachment,
         source.error_count.unwrap_or(0),
         i64::from(ERROR_THRESHOLD),
         sub.enable_notification,
         sub.enable_telegraph,
+        lang,
     );
     bot.edit_message_text(chat_id, message_id, text)
         .parse_mode(ParseMode::Html)
@@ -257,17 +270,18 @@ async fn handle_set_feed_item(
     chat_id: ChatId,
     message_id: MessageId,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
     if !is_authorized(attachment, query) {
-        return edit_plain(bot, chat_id, message_id, "获取订阅信息失败").await;
+        return edit_plain(bot, chat_id, message_id, lang.set_unauthorized()).await;
     }
     let source_id = i64::from(attachment.source_id);
     let Ok(Some(source)) = state.repo.get_source(source_id).await else {
-        return edit_plain(bot, chat_id, message_id, "找不到该订阅源").await;
+        return edit_plain(bot, chat_id, message_id, lang.set_source_not_found()).await;
     };
     let Ok(Some(sub)) = state.repo.subscription(attachment.user_id, source_id).await else {
-        return edit_plain(bot, chat_id, message_id, "用户未订阅该rss").await;
+        return edit_plain(bot, chat_id, message_id, lang.set_user_not_subscribed()).await;
     };
-    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment).await
+    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment, lang).await
 }
 
 async fn handle_toggle_update(
@@ -278,18 +292,19 @@ async fn handle_toggle_update(
     chat_id: ChatId,
     message_id: MessageId,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
     if !is_authorized(attachment, query) {
-        return respond_toast(bot, query, "error").await;
+        return respond_toast(bot, query, lang.toast_error()).await;
     }
     let source_id = i64::from(attachment.source_id);
     let Ok(Some(sub)) = state.repo.subscription(attachment.user_id, source_id).await else {
-        return respond_toast(bot, query, "error").await;
+        return respond_toast(bot, query, lang.toast_error()).await;
     };
     let Ok(Some(source)) = state.repo.toggle_source_update_status(source_id).await else {
-        return respond_toast(bot, query, "error").await;
+        return respond_toast(bot, query, lang.toast_error()).await;
     };
-    respond_toast(bot, query, "修改成功").await?;
-    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment).await
+    respond_toast(bot, query, lang.set_modified_toast()).await?;
+    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment, lang).await
 }
 
 async fn handle_toggle_notice(
@@ -300,22 +315,23 @@ async fn handle_toggle_notice(
     chat_id: ChatId,
     message_id: MessageId,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
     if !is_authorized(attachment, query) {
-        return edit_plain(bot, chat_id, message_id, "系统错误！").await;
+        return edit_plain(bot, chat_id, message_id, lang.system_error_exclaim()).await;
     }
     let source_id = i64::from(attachment.source_id);
     let Ok(Some(source)) = state.repo.get_source(source_id).await else {
-        return respond_toast(bot, query, "error").await;
+        return respond_toast(bot, query, lang.toast_error()).await;
     };
     let Ok(Some(sub)) = state
         .repo
         .toggle_subscription_notice(attachment.user_id, source_id)
         .await
     else {
-        return respond_toast(bot, query, "error").await;
+        return respond_toast(bot, query, lang.toast_error()).await;
     };
-    respond_toast(bot, query, "修改成功").await?;
-    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment).await
+    respond_toast(bot, query, lang.set_modified_toast()).await?;
+    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment, lang).await
 }
 
 async fn handle_toggle_telegraph(
@@ -326,43 +342,46 @@ async fn handle_toggle_telegraph(
     chat_id: ChatId,
     message_id: MessageId,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
     if !is_authorized(attachment, query) {
-        return respond_toast(bot, query, "error").await;
+        return respond_toast(bot, query, lang.toast_error()).await;
     }
     let source_id = i64::from(attachment.source_id);
     let Ok(Some(source)) = state.repo.get_source(source_id).await else {
-        return respond_toast(bot, query, "error").await;
+        return respond_toast(bot, query, lang.toast_error()).await;
     };
     let Ok(Some(sub)) = state
         .repo
         .toggle_subscription_telegraph(attachment.user_id, source_id)
         .await
     else {
-        return respond_toast(bot, query, "error").await;
+        return respond_toast(bot, query, lang.toast_error()).await;
     };
-    respond_toast(bot, query, "修改成功").await?;
-    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment).await
+    respond_toast(bot, query, lang.set_modified_toast()).await?;
+    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment, lang).await
 }
 
 // Go's `SetSubscriptionTagButton` replies with legacy `tb.ModeMarkdown`.
 #[allow(deprecated)]
 async fn handle_set_sub_tag(
     bot: &Bot,
+    state: &BotState,
     query: &CallbackQuery,
     attachment: Attachment,
     chat_id: ChatId,
     message_id: MessageId,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
     if !is_authorized(attachment, query) {
         // Go's `feedSetAuth` failure sends a *new* message via `ctx.Send`,
         // unlike every other handler here which edits in place.
-        bot.send_message(chat_id, "无权限").await?;
+        bot.send_message(chat_id, lang.set_tag_no_permission()).await?;
         return Ok(());
     }
     let source_id = attachment.source_id;
-    let text = format!(
-        "请使用`/setfeedtag {source_id} tags`命令为该订阅设置标签，tags为需要设置的标签，以空格分隔。（最多设置三个标签） \n例如：`/setfeedtag {source_id} 科技 苹果`"
-    );
+    let text = lang
+        .set_tag_prompt()
+        .replace("{source_id}", &source_id.to_string());
     bot.edit_message_text(chat_id, message_id, text)
         .parse_mode(ParseMode::Markdown)
         .await?;
@@ -380,9 +399,10 @@ async fn handle_unsub_feed_item(
     chat_id: ChatId,
     message_id: MessageId,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
     let source_id = i64::from(attachment.source_id);
     let Ok(Some(source)) = state.repo.get_source(source_id).await else {
-        return edit_plain(bot, chat_id, message_id, "退订错误！").await;
+        return edit_plain(bot, chat_id, message_id, lang.unsub_error()).await;
     };
     match state
         .repo
@@ -390,17 +410,17 @@ async fn handle_unsub_feed_item(
         .await
     {
         Ok(_) => {
-            let text = format!(
-                "[{source_id}] <a href=\"{}\">{}</a> 退订成功",
+            let text = lang.unsub_succeeded_html(
+                source_id,
                 source.link.as_deref().unwrap_or(""),
-                source.title.as_deref().unwrap_or("")
+                source.title.as_deref().unwrap_or(""),
             );
             bot.edit_message_text(chat_id, message_id, text)
                 .parse_mode(ParseMode::Html)
                 .await?;
             Ok(())
         }
-        Err(_) => edit_plain(bot, chat_id, message_id, "退订错误！").await,
+        Err(_) => edit_plain(bot, chat_id, message_id, lang.unsub_error()).await,
     }
 }
 
@@ -411,10 +431,11 @@ async fn handle_unsuball_confirm(
     chat_id: ChatId,
     message_id: MessageId,
 ) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
     let sender_id = query.from.id.0 as i64;
     match state.repo.unsubscribe_all_user(sender_id).await {
-        Ok(_) => edit_plain(bot, chat_id, message_id, "退订成功").await,
-        Err(_) => edit_plain(bot, chat_id, message_id, "退订失败").await,
+        Ok(_) => edit_plain(bot, chat_id, message_id, lang.unsub_succeeded_plain()).await,
+        Err(_) => edit_plain(bot, chat_id, message_id, lang.unsub_failed_plain()).await,
     }
 }
 
@@ -422,6 +443,7 @@ async fn handle_unsuball_cancel(
     bot: &Bot,
     chat_id: ChatId,
     message_id: MessageId,
+    lang: Lang,
 ) -> ResponseResult<()> {
-    edit_plain(bot, chat_id, message_id, "操作取消").await
+    edit_plain(bot, chat_id, message_id, lang.unsub_cancelled()).await
 }

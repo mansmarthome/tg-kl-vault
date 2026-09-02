@@ -1,3 +1,5 @@
+use crate::bot::i18n::Lang;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeedSettingData<'a> {
     pub source_id: i64,
@@ -11,53 +13,38 @@ pub struct FeedSettingData<'a> {
     pub tag: &'a str,
 }
 
-/// Render the Go `feedSettingTmpl` (`internal/bot/handler/set.go`) byte-for-byte.
-pub fn render_feed_setting(data: &FeedSettingData<'_>) -> String {
-    let status = if data.source_error_count >= data.error_threshold { "暂停" } else { "抓取中" };
-    let notice = match data.enable_notification {
-        Some(0) => "关闭",
-        Some(1) => "开启",
-        _ => "",
-    };
-    let telegraph = match data.enable_telegraph {
-        Some(0) => "关闭",
-        Some(1) => "开启",
-        _ => "",
-    };
-    let tag = if data.tag.is_empty() { "无" } else { data.tag };
-
-    format!(
-        "\n订阅<b>设置</b>\n[id] {}\n[标题] {}\n[Link] {}\n[抓取更新] {}\n[抓取频率] {}分钟\n[通知] {}\n[Telegraph] {}\n[Tag] {}\n",
-        data.source_id, data.source_title, data.source_link, status, data.interval, notice, telegraph, tag
-    )
+/// Render the per-feed setting panel in the chat's language.
+pub fn render_feed_setting(lang: Lang, data: &FeedSettingData<'_>) -> String {
+    lang.feed_setting(data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn renders_feed_setting_template_like_go() {
-        let data = FeedSettingData {
+    fn fixture(tag: &'static str, source_error_count: i64) -> FeedSettingData<'static> {
+        FeedSettingData {
             source_id: 7,
-            source_title: "标题",
+            source_title: "Example",
             source_link: "https://example.com/feed",
-            source_error_count: 0,
+            source_error_count,
             error_threshold: 100,
             interval: 10,
             enable_notification: Some(1),
             enable_telegraph: Some(0),
-            tag: "",
-        };
-        assert_eq!(
-            render_feed_setting(&data),
-            "\n订阅<b>设置</b>\n[id] 7\n[标题] 标题\n[Link] https://example.com/feed\n[抓取更新] 抓取中\n[抓取频率] 10分钟\n[通知] 开启\n[Telegraph] 关闭\n[Tag] 无\n"
-        );
+            tag,
+        }
+    }
 
-        let paused = FeedSettingData { source_error_count: 101, tag: "#tag", ..data };
-        assert_eq!(
-            render_feed_setting(&paused),
-            "\n订阅<b>设置</b>\n[id] 7\n[标题] 标题\n[Link] https://example.com/feed\n[抓取更新] 暂停\n[抓取频率] 10分钟\n[通知] 开启\n[Telegraph] 关闭\n[Tag] #tag\n"
-        );
+    #[test]
+    fn renders_in_all_languages() {
+        for lang in [Lang::En, Lang::ZhTw, Lang::Ru] {
+            let active = render_feed_setting(lang, &fixture("", 0));
+            let paused = render_feed_setting(lang, &fixture("#tag", 101));
+            assert!(!active.is_empty());
+            assert!(!paused.is_empty());
+            assert!(active.contains("7"));
+            assert!(paused.contains("#tag"));
+        }
     }
 }
