@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn compose_with_empty_description_is_header_only() {
         let html = compose_feed_message("源", "title", "https://example.com/p", "", "", None);
-        let expected = "<b>源</b>\n<a href=\"https://example.com/p\">title</a>\n";
+        let expected = "<b>源</b>\n<b><u><a href=\"https://example.com/p\">title</a></u></b>\n";
         assert_eq!(html, expected);
     }
 
@@ -651,7 +651,9 @@ mod tests {
         let n = normalize(&out);
         assert!(n.contains("<b>TLDR</b>"), "got: {out:?}");
         assert!(n.contains("<i>simple</i>"), "got: {out:?}");
-        assert!(n.contains("<b>Details</b>"), "got: {out:?}");
+        // h1-h6 render as underlined (not bold) so they stand out without
+        // being mistaken for inline emphasis.
+        assert!(n.contains("<u>Details</u>"), "got: {out:?}");
         assert!(n.contains("<b>•</b> one"), "got: {out:?}");
         assert!(
             n.contains("<b>•</b> two with a <a href=\"https://example.com/\">link</a>"),
