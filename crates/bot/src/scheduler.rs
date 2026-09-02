@@ -5,16 +5,16 @@ use tracing::{info, warn};
 
 use crate::{
     bot::{
-        render::{render_html, render_markdown, MessageData},
+        html_format::compose_feed_message,
         sender::{MessageSender, SendOptions, SendOutcome},
     },
-    config::{Config, MessageMode},
+    config::Config,
     db::{
         models::{Content, Source, Subscribe},
         repo::Repo,
     },
     feed::{fetch::{FetchOutcome, Fetcher}, hash::gen_hash_id, parse::{parse_feed, ParsedItem}},
-    preview::{trim_description, PublishRequest, PreviewPublisher},
+    preview::{PublishRequest, PreviewPublisher},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,28 +191,26 @@ where
         for sub in subs {
             let Some(user_id) = sub.user_id else { continue };
 
-            let preview_text = trim_description(item.description.as_deref().unwrap_or(""), self.config.preview_text);
+            let description_html = item
+                .content
+                .as_deref()
+                .or(item.description.as_deref())
+                .unwrap_or("");
             let enable_telegraph = sub.enable_telegraph == Some(1) && telegraph_url.is_some();
-            let data = MessageData {
-                source_title: source.title.as_deref().unwrap_or(""),
-                content_title: &item.title,
-                raw_link: &item.link,
-                preview_text: &preview_text,
-                telegraph_url: telegraph_url.unwrap_or(""),
-                tags: sub.tag.as_deref().unwrap_or(""),
-                enable_telegraph,
-            };
-            let text = match self.config.message_mode {
-                MessageMode::Html => render_html(&data),
-                MessageMode::Markdown => render_markdown(&data),
-            };
+            let composed = compose_feed_message(
+                source.title.as_deref().unwrap_or(""),
+                &item.title,
+                &item.link,
+                sub.tag.as_deref().unwrap_or(""),
+                description_html,
+                if enable_telegraph { telegraph_url } else { None },
+            );
             let options = SendOptions {
                 disable_web_page_preview: self.config.disable_web_page_preview,
                 disable_notification: sub.enable_notification != Some(1),
-                parse_mode: self.config.message_mode,
             };
 
-            match self.sender.send_text(user_id, &text, options).await {
+            match self.sender.send_text(user_id, &composed, options).await {
                 Ok(SendOutcome::Sent) => {}
                 Ok(SendOutcome::Forbidden) => {
                     warn!(source_id = source.id, user_id, hash_id, "broadcast forbidden; subscription kept");

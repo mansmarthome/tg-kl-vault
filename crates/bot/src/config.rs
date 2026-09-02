@@ -10,7 +10,6 @@ pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36";
 pub const DEFAULT_UPDATE_INTERVAL_MINUTES: u64 = 10;
 pub const ERROR_THRESHOLD: u32 = 100;
-pub const DEFAULT_PREVIEW_TEXT: u32 = 0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -24,9 +23,7 @@ pub struct Config {
     pub update_interval: u64,
     pub user_agent: String,
     pub allowed_users: Vec<i64>,
-    pub preview_text: u32,
     pub disable_web_page_preview: bool,
-    pub message_mode: MessageMode,
     pub sqlite: SqliteConfig,
     pub telegram: TelegramConfig,
     pub log: LogConfig,
@@ -47,9 +44,7 @@ impl Default for Config {
             update_interval: DEFAULT_UPDATE_INTERVAL_MINUTES,
             user_agent: DEFAULT_USER_AGENT.to_owned(),
             allowed_users: Vec::new(),
-            preview_text: DEFAULT_PREVIEW_TEXT,
             disable_web_page_preview: false,
-            message_mode: MessageMode::Html,
             sqlite: SqliteConfig::default(),
             telegram: TelegramConfig::default(),
             log: LogConfig::default(),
@@ -79,9 +74,7 @@ impl Config {
         set_parse(&mut self.update_interval, "FLOWERSS_UPDATE_INTERVAL")?;
         set_string(&mut self.user_agent, "FLOWERSS_USER_AGENT");
         set_i64_vec(&mut self.allowed_users, "FLOWERSS_ALLOWED_USERS")?;
-        set_parse(&mut self.preview_text, "FLOWERSS_PREVIEW_TEXT")?;
         set_parse(&mut self.disable_web_page_preview, "FLOWERSS_DISABLE_WEB_PAGE_PREVIEW")?;
-        set_parse(&mut self.message_mode, "FLOWERSS_MESSAGE_MODE")?;
         set_string(&mut self.sqlite.path, "FLOWERSS_SQLITE_PATH");
         set_string(&mut self.telegram.endpoint, "FLOWERSS_TELEGRAM_ENDPOINT");
         set_string(&mut self.log.level, "FLOWERSS_LOG_LEVEL");
@@ -142,25 +135,6 @@ fn split_vec_tokens(raw: &str) -> impl Iterator<Item = &str> {
         .filter(|part| !part.is_empty())
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageMode {
-    Html,
-    Markdown,
-}
-
-impl std::str::FromStr for MessageMode {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.to_ascii_lowercase().as_str() {
-            "html" => Ok(Self::Html),
-            "markdown" => Ok(Self::Markdown),
-            _ => anyhow::bail!("expected html or markdown"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct SqliteConfig {
@@ -216,8 +190,6 @@ mod tests {
     fn defaults_match_go_sample_and_sanctioned_deviations() {
         let cfg = Config::default();
         assert_eq!(cfg.update_interval, 10);
-        assert_eq!(cfg.preview_text, 0);
-        assert_eq!(cfg.message_mode, MessageMode::Html);
         assert_eq!(cfg.user_agent, DEFAULT_USER_AGENT);
         assert_eq!(ERROR_THRESHOLD, 100);
         assert_eq!(cfg.fetch.concurrency, 8);
@@ -237,9 +209,7 @@ mod tests {
             ("FLOWERSS_UPDATE_INTERVAL", "15"),
             ("FLOWERSS_USER_AGENT", "test-agent"),
             ("FLOWERSS_ALLOWED_USERS", "42,-100"),
-            ("FLOWERSS_PREVIEW_TEXT", "120"),
             ("FLOWERSS_DISABLE_WEB_PAGE_PREVIEW", "true"),
-            ("FLOWERSS_MESSAGE_MODE", "markdown"),
             ("FLOWERSS_SQLITE_PATH", "/tmp/flowerss.db"),
             ("FLOWERSS_TELEGRAM_ENDPOINT", "https://telegram.example"),
             ("FLOWERSS_LOG_LEVEL", "debug"),
@@ -260,9 +230,7 @@ mod tests {
         assert_eq!(cfg.update_interval, 15);
         assert_eq!(cfg.user_agent, "test-agent");
         assert_eq!(cfg.allowed_users, vec![42, -100]);
-        assert_eq!(cfg.preview_text, 120);
         assert!(cfg.disable_web_page_preview);
-        assert_eq!(cfg.message_mode, MessageMode::Markdown);
         assert_eq!(cfg.sqlite.path, "/tmp/flowerss.db");
         assert_eq!(cfg.telegram.endpoint, "https://telegram.example");
         assert_eq!(cfg.log.level, "debug");

@@ -112,9 +112,7 @@ socks5 = ""
 update_interval = 10
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
 allowed_users = []
-preview_text = 0
 disable_web_page_preview = false
-message_mode = "html"
 
 [sqlite]
 path = "/app/data/data.db"
@@ -138,9 +136,7 @@ Important fields:
 | `socks5` | Optional SOCKS5 proxy, for example `127.0.0.1:1080`. Leave empty to disable. |
 | `update_interval` | Default feed refresh interval in minutes. |
 | `allowed_users` | Optional Telegram user/chat allow-list. Empty means everyone can use the bot. |
-| `preview_text` | Preview text length. `0` keeps default behavior. |
 | `disable_web_page_preview` | Disable Telegram link previews when sending messages. |
-| `message_mode` | `html` or `markdown`. |
 | `sqlite.path` | SQLite database path. In Docker Compose, use `/app/data/data.db`. |
 | `telegram.endpoint` | Optional custom Telegram Bot API server endpoint. Empty means official Telegram API. |
 | `log.level` | Tracing log level, for example `error`, `warn`, `info`, `debug`, `trace`. |
@@ -195,9 +191,7 @@ Every config value can be supplied through environment variables with the `FLOWE
 | `FLOWERSS_UPDATE_INTERVAL` | `update_interval` | `10` |
 | `FLOWERSS_USER_AGENT` | `user_agent` | `Mozilla/5.0 ...` |
 | `FLOWERSS_ALLOWED_USERS` | `allowed_users` | `123456,-100987654321` |
-| `FLOWERSS_PREVIEW_TEXT` | `preview_text` | `120` |
 | `FLOWERSS_DISABLE_WEB_PAGE_PREVIEW` | `disable_web_page_preview` | `false` |
-| `FLOWERSS_MESSAGE_MODE` | `message_mode` | `html` or `markdown` |
 | `FLOWERSS_SQLITE_PATH` | `sqlite.path` | `/app/data/data.db` |
 | `FLOWERSS_TELEGRAM_ENDPOINT` | `telegram.endpoint` | `https://api.telegram.org` |
 | `FLOWERSS_LOG_LEVEL` | `log.level` | `info` |

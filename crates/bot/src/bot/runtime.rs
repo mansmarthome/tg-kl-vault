@@ -12,12 +12,12 @@ use crate::{
         callbacks::handle_callback,
         commands::{Command, COMMANDS},
         documents::handle_document,
+        html_format::compose_feed_message,
         keyboard::{feed_item_list_keyboard, settings_keyboard, unsuball_confirm_keyboard},
-        render::{render_html, render_markdown, MessageData},
         sender::{MessageSender, SendOptions, TeloxideSender},
         subscribe::create_source,
     },
-    config::{Config, MessageMode},
+    config::Config,
     db::{models::Content, repo::Repo},
     feed::{
         fetch::{FetchOutcome, Fetcher},
@@ -25,7 +25,7 @@ use crate::{
         parse::parse_feed,
     },
     opml::{export_opml, OpmlSource},
-    preview::{trim_description, PreviewPublisher, PublishRequest, TelegraphPublisher},
+    preview::{PreviewPublisher, PublishRequest, TelegraphPublisher},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -535,33 +535,28 @@ async fn handle_check(bot: &Bot, msg: &Message, state: &BotState) -> ResponseRes
                         .await
                         .map_err(to_request_error)?;
 
-                    let preview_text = trim_description(
-                        item.description.as_deref().unwrap_or(""),
-                        state.config.preview_text,
-                    );
+                    let description_html = item
+                        .content
+                        .as_deref()
+                        .or(item.description.as_deref())
+                        .unwrap_or("");
                     let enable_telegraph =
                         sub.enable_telegraph == Some(1) && telegraph_url.is_some();
-                    let data = MessageData {
-                        source_title: source.title.as_deref().unwrap_or(""),
-                        content_title: &item.title,
-                        raw_link: &item.link,
-                        preview_text: &preview_text,
-                        telegraph_url: telegraph_url.as_deref().unwrap_or(""),
-                        tags: sub.tag.as_deref().unwrap_or(""),
-                        enable_telegraph,
-                    };
-                    let text = match state.config.message_mode {
-                        MessageMode::Html => render_html(&data),
-                        MessageMode::Markdown => render_markdown(&data),
-                    };
+                    let composed = compose_feed_message(
+                        source.title.as_deref().unwrap_or(""),
+                        &item.title,
+                        &item.link,
+                        sub.tag.as_deref().unwrap_or(""),
+                        description_html,
+                        if enable_telegraph { telegraph_url.as_deref() } else { None },
+                    );
                     let _ = sender
                         .send_text(
                             chat_id,
-                            &text,
+                            &composed,
                             SendOptions {
                                 disable_web_page_preview: state.config.disable_web_page_preview,
                                 disable_notification: sub.enable_notification != Some(1),
-                                parse_mode: state.config.message_mode,
                             },
                         )
                         .await;
