@@ -110,8 +110,26 @@ pub async fn run_bot(
 /// silently accepting.
 fn reject_unauthorized_message(state: Arc<BotState>, msg: Message) -> bool {
     match auth::message_user_id(&msg) {
-        Some(user_id) => auth::is_allowed(&state.config, user_id),
-        None => false,
+        Some(user_id) => {
+            if auth::is_allowed(&state.config, user_id) {
+                true
+            } else {
+                warn!(
+                    user_id,
+                    chat_id = msg.chat.id.0,
+                    allowed_users = ?state.config.allowed_users,
+                    "dropped message: user not in allowed_users"
+                );
+                false
+            }
+        }
+        None => {
+            warn!(
+                chat_id = msg.chat.id.0,
+                "dropped message: no `from` field (channel post or anonymous admin)"
+            );
+            false
+        }
     }
 }
 
@@ -120,8 +138,23 @@ fn reject_unauthorized_message(state: Arc<BotState>, msg: Message) -> bool {
 /// allow-list, or update a message the rejecter is no longer looking at.
 fn reject_unauthorized_callback(state: Arc<BotState>, query: CallbackQuery) -> bool {
     match auth::callback_user_id(&query) {
-        Some(user_id) => auth::is_allowed(&state.config, user_id),
-        None => false,
+        Some(user_id) => {
+            if auth::is_allowed(&state.config, user_id) {
+                true
+            } else {
+                warn!(
+                    user_id,
+                    chat_instance = %query.chat_instance,
+                    allowed_users = ?state.config.allowed_users,
+                    "dropped callback query: user not in allowed_users"
+                );
+                false
+            }
+        }
+        None => {
+            warn!("dropped callback query: missing `from` field");
+            false
+        }
     }
 }
 
