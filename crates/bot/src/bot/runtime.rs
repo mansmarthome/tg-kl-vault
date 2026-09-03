@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use teloxide::{
+    error_handlers::LoggingErrorHandler,
     prelude::*,
     types::{ChatId, LinkPreviewOptions, ParseMode},
+    update_listeners::Polling,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -85,12 +87,29 @@ pub async fn run_bot(
                 .endpoint(handle_callback),
         );
 
-    let mut dispatcher = Dispatcher::builder(bot, handler)
+    let mut dispatcher = Dispatcher::builder(bot.clone(), handler)
         .dependencies(dptree::deps![state])
         .build();
     let shutdown_token = dispatcher.shutdown_token();
 
-    let dispatch_task = tokio::spawn(async move { dispatcher.dispatch().await });
+    // Always fast-forward past any backlog that piled up while the bot was
+    // offline (e.g. while running in broadcast mode). The first getUpdates
+    // uses `offset = -1, timeout = 0, limit = 1`, so the pending payload is
+    // consumed server-side without being delivered to the dispatcher, and
+    // normal polling resumes from the latest update_id. `.delete_webhook()`
+    // here replaces `client::build_bot`'s equivalent call on this path, so
+    // a stale webhook cannot block the very first long-poll.
+    let listener = Polling::builder(bot)
+        .drop_pending_updates()
+        .delete_webhook()
+        .await
+        .build();
+    let error_handler = LoggingErrorHandler::with_custom_text("An error from the update listener");
+    let dispatch_task = tokio::spawn(async move {
+        dispatcher
+            .dispatch_with_listener(listener, error_handler)
+            .await
+    });
 
     if shutdown.changed().await.is_ok() && *shutdown.borrow() {
         if let Ok(done) = shutdown_token.shutdown() {

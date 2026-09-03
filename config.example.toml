@@ -25,6 +25,9 @@ endpoint = ""
 #   broadcast - outbound sends only; no getUpdates, no commands, no buttons.
 #               Use this for steady-state operation behind a self-hosted Bot API.
 #               Switch back to "polling" to manage subscriptions.
+# In polling mode the bot always fast-forwards past any backlog that
+# accumulated while offline (e.g. while in broadcast), so toggling modes
+# does not dump a flood of stale updates on the next start.
 mode = "polling"
 
 [log]
