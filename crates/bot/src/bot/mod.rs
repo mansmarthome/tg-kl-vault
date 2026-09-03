@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod callback;
 pub mod callbacks;
 pub mod client;

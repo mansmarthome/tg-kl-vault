@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use crate::{
     bot::{
+        auth,
         callbacks::handle_callback,
         commands::{Command, COMMAND_NAMES},
         documents::handle_document,
@@ -69,14 +70,20 @@ pub async fn run_bot(
         .branch(
             Update::filter_message()
                 .filter_command::<Command>()
+                .filter(reject_unauthorized_message)
                 .endpoint(handle_command),
         )
         .branch(
             Update::filter_message()
                 .filter(|msg: Message| msg.document().is_some())
+                .filter(reject_unauthorized_message)
                 .endpoint(handle_document),
         )
-        .branch(Update::filter_callback_query().endpoint(handle_callback));
+        .branch(
+            Update::filter_callback_query()
+                .filter(reject_unauthorized_callback)
+                .endpoint(handle_callback),
+        );
 
     let mut dispatcher = Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
@@ -92,6 +99,30 @@ pub async fn run_bot(
     }
     dispatch_task.await?;
     Ok(())
+}
+
+/// `dptree` filter: allow the message through when `config.allowed_users` is
+/// empty or contains the sender's Telegram user ID. Reject otherwise.
+///
+/// Channel posts and messages without a `from` field (`from` is `None` for
+/// anonymous admins/owners) are treated as unauthorized: the bot is meant
+/// for person-to-person subscriptions, so signing them off is safer than
+/// silently accepting.
+fn reject_unauthorized_message(state: Arc<BotState>, msg: Message) -> bool {
+    match auth::message_user_id(&msg) {
+        Some(user_id) => auth::is_allowed(&state.config, user_id),
+        None => false,
+    }
+}
+
+/// `dptree` filter for inline-button callbacks. Drop silently on rejection:
+/// answering the toast would either leak that the bot is configured with an
+/// allow-list, or update a message the rejecter is no longer looking at.
+fn reject_unauthorized_callback(state: Arc<BotState>, query: CallbackQuery) -> bool {
+    match auth::callback_user_id(&query) {
+        Some(user_id) => auth::is_allowed(&state.config, user_id),
+        None => false,
+    }
 }
 
 async fn handle_command(

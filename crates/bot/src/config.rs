@@ -343,6 +343,17 @@ mode = "webhook"
     }
 
     #[test]
+    fn toml_allowed_users_parses_integers() {
+        let toml = r#"
+allowed_users = [42, -1001]
+"#;
+        let figment = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml));
+        let cfg: Config = figment.extract().unwrap();
+        assert_eq!(cfg.allowed_users, vec![42, -1001]);
+    }
+
+    #[test]
     fn env_mode_rejects_unknown_value() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("FLOWERSS_TELEGRAM_MODE", "nope");
