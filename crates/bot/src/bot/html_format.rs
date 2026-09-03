@@ -168,22 +168,52 @@ pub fn compose_feed_message(
 
 /// If the assembled header + body would exceed `MESSAGE_TEXT_LIMIT`, drop
 /// the description's tail until we fit. The `…` is appended to the body so
-/// the header is preserved verbatim. This is a char-based estimate of the
-/// parsed message length (close enough for v1; Telegram's exact metric is
-/// the parsed message's plain text).
+/// the header is preserved verbatim. The budget is measured in *characters*
+/// (matching Telegram's per-message cap) and the cut is rewound to the last
+/// safely-closed tag boundary so we never leave an unclosed `<a>` (or any
+/// other tag) dangling in the output — Telegram rejects those with
+/// "can't find end tag corresponding to start tag".
 fn truncate_to_limit(header: &mut String, body: &mut String) {
-    if header.len() + body.len() <= MESSAGE_TEXT_LIMIT {
+    let total_chars = header.chars().count() + body.chars().count();
+    if total_chars <= MESSAGE_TEXT_LIMIT {
         return;
     }
-    let budget = MESSAGE_TEXT_LIMIT.saturating_sub(header.len()).saturating_sub(1);
-    if body.len() > budget {
-        body.truncate(budget);
-        // Drop any partial multi-byte char at the end.
-        while !body.is_empty() && !body.is_char_boundary(body.len()) {
-            body.pop();
-        }
-        body.push('…');
+    // Reserve one char for the trailing `…`.
+    let budget = MESSAGE_TEXT_LIMIT
+        .saturating_sub(header.chars().count())
+        .saturating_sub(1);
+    if body.chars().count() <= budget {
+        return;
     }
+    // Walk the body backwards in chars, keeping the last `budget` chars but
+    // snapping the cut to the byte index just after the last `</tag>` (or
+    // any other non-tag char) so the truncation never lands inside a tag.
+    let keep: String = body
+        .chars()
+        .rev()
+        .take(budget)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    body.clear();
+    body.push_str(&rewind_to_safe_boundary(&keep));
+    body.push('…');
+}
+
+/// Given a candidate body fragment produced by walking backwards from the
+/// end, rewind to a position that does not leave an unclosed HTML tag. The
+/// scan is intentionally simple: find the byte offset of the last `</` (or
+/// the last `>` if no closing tag is present) and cut just after it. If the
+/// fragment contains no `>` at all, we cannot safely emit any of it.
+fn rewind_to_safe_boundary(s: &str) -> &str {
+    let Some(last_close) = s.rfind("</") else {
+        return "";
+    };
+    let Some(close_end) = s[last_close..].find('>') else {
+        return "";
+    };
+    &s[..last_close + close_end + 1]
 }
 
 fn push_escape_text(out: &mut String, value: &str) {
@@ -651,6 +681,24 @@ mod tests {
     }
 
     #[test]
+    fn empty_anchor_in_description_is_dropped() {
+        // A stray `<a href="" target="_blank"></a>` inside the description
+        // must not leak as an unclosed anchor into the Telegram payload.
+        let desc = "Августовский дайджест: Умный дом в новом свете (<a href=\"\" target=\"_blank\"></a>)";
+        let html = compose_feed_message(
+            "源",
+            "title",
+            "https://example.com/p",
+            "",
+            desc,
+            None,
+        );
+        assert!(!html.contains("href=\"\""), "empty href leaked: {html:?}");
+        assert!(!html.contains("<a></a>"), "empty anchor leaked: {html:?}");
+        assert!(html.contains("Августовский дайджест"), "text lost: {html:?}");
+    }
+
+    #[test]
     fn compose_includes_formatted_description() {
         let html = compose_feed_message(
             "源",
@@ -740,6 +788,21 @@ mod tests {
         assert!(html.contains("<b>源</b>"), "header lost");
         assert!(html.contains("title"), "title lost");
         // Body got truncated with an ellipsis.
+        assert!(html.contains('…'), "expected ellipsis: {html:?}");
+    }
+
+    #[test]
+    fn compose_truncation_does_not_leave_unclosed_anchor() {
+        // Telegram rejects any unclosed HTML tag with
+        // "can't find end tag corresponding to start tag". A naive byte
+        // truncate can chop inside `<a href="…">…</a>`; the rewind must
+        // snap back to the last `</…>` so the cut never lands inside a tag.
+        let link = "<a href=\"https://example.com/very/long/path/that/forces/truncation\">click me</a>";
+        let big = format!("{} {}", link, "x".repeat(MESSAGE_TEXT_LIMIT));
+        let html = compose_feed_message("源", "title", "https://x", "", &big, None);
+        let opens = html.matches("<a ").count();
+        let closes = html.matches("</a>").count();
+        assert_eq!(opens, closes, "unbalanced anchors: {html:?}");
         assert!(html.contains('…'), "expected ellipsis: {html:?}");
     }
 
