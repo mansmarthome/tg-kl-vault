@@ -742,13 +742,15 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(sub.enable_telegraph, Some(0));
+        // New subscriptions default to enable_telegraph = 0
+        // (see `subscribe_user`), so the first toggle enables it.
+        assert_eq!(sub.enable_telegraph, Some(1));
         let sub = repo
             .toggle_subscription_telegraph(42, source_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(sub.enable_telegraph, Some(1));
+        assert_eq!(sub.enable_telegraph, Some(0));
     }
 
     #[tokio::test]
