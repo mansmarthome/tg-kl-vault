@@ -120,15 +120,26 @@ pub fn compose_feed_message(
 ) -> String {
     let mut out = String::new();
 
-    out.push_str("<b>");
-    push_escape_text(&mut out, source_title);
-    out.push_str("</b>\n");
+    if !source_title.is_empty() {
+        out.push_str("<b>");
+        push_escape_text(&mut out, source_title);
+        out.push_str("</b>\n");
+    }
 
-    out.push_str("<b><u><a href=\"");
-    push_escape_attr(&mut out, item_link);
-    out.push_str("\">");
-    push_escape_text(&mut out, item_title);
-    out.push_str("</a></u></b>");
+    if item_link.is_empty() {
+        // Telegram rejects `<a href=""></a>` as an unclosed tag, so when the
+        // feed item has no link we drop the anchor and just bold/underline
+        // the title.
+        out.push_str("<b><u>");
+        push_escape_text(&mut out, item_title);
+        out.push_str("</u></b>");
+    } else {
+        out.push_str("<b><u><a href=\"");
+        push_escape_attr(&mut out, item_link);
+        out.push_str("\">");
+        push_escape_text(&mut out, item_title);
+        out.push_str("</a></u></b>");
+    }
 
     if let Some(url) = telegraph_url.filter(|u| !u.is_empty()) {
         out.push_str(" | <a href=\"");
@@ -611,6 +622,31 @@ mod tests {
     fn compose_with_empty_description_is_header_only() {
         let html = compose_feed_message("源", "title", "https://example.com/p", "", "", None);
         let expected = "<b>源</b>\n<b><u><a href=\"https://example.com/p\">title</a></u></b>\n";
+        assert_eq!(html, expected);
+    }
+
+    #[test]
+    fn compose_skips_source_title_when_empty() {
+        let html = compose_feed_message("", "title", "https://example.com/p", "", "", None);
+        let expected = "<b><u><a href=\"https://example.com/p\">title</a></u></b>\n";
+        assert_eq!(html, expected);
+        assert!(!html.starts_with("<b></b>"), "got: {html:?}");
+    }
+
+    #[test]
+    fn compose_drops_anchor_when_item_link_is_empty() {
+        // Telegram rejects `<a href=""></a>` as an unclosed tag, so the
+        // header must not emit an anchor when the feed item has no link.
+        let html = compose_feed_message("源", "title", "", "", "", None);
+        let expected = "<b>源</b>\n<b><u>title</u></b>\n";
+        assert_eq!(html, expected);
+        assert!(!html.contains("<a"), "anchor leaked: {html:?}");
+    }
+
+    #[test]
+    fn compose_with_empty_source_and_link_keeps_plain_title() {
+        let html = compose_feed_message("", "title", "", "", "", None);
+        let expected = "<b><u>title</u></b>\n";
         assert_eq!(html, expected);
     }
 
