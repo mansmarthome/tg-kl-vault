@@ -12,6 +12,7 @@ pub struct SubscriptionSource {
     pub source_id: Option<i64>,
     pub enable_notification: Option<i64>,
     pub enable_telegraph: Option<i64>,
+    pub enable_source_title: Option<i64>,
     pub tag: Option<String>,
     pub interval: Option<i64>,
     pub wait_time: Option<i64>,
@@ -111,8 +112,8 @@ impl Repo {
         }
         sqlx::query(
             "INSERT INTO subscribes \
-             (user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at) \
-             VALUES (?, ?, 1, 0, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+             (user_id, source_id, enable_notification, enable_telegraph, enable_source_title, tag, interval, wait_time, created_at, updated_at) \
+             VALUES (?, ?, 1, 0, 1, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
         .bind(user_id)
         .bind(source_id)
@@ -127,7 +128,7 @@ impl Repo {
         source_id: i64,
     ) -> sqlx::Result<Option<Subscribe>> {
         sqlx::query_as::<_, Subscribe>(
-            "SELECT id, user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at \
+            "SELECT id, user_id, source_id, enable_notification, enable_telegraph, enable_source_title, tag, interval, wait_time, created_at, updated_at \
              FROM subscribes WHERE user_id = ? AND source_id = ? LIMIT 1",
         )
         .bind(user_id)
@@ -202,7 +203,7 @@ impl Repo {
     ) -> sqlx::Result<Vec<SubscriptionSource>> {
         sqlx::query_as::<_, SubscriptionSource>(
             "SELECT subscribes.id AS subscribe_id, subscribes.user_id, subscribes.source_id, \
-                    subscribes.enable_notification, subscribes.enable_telegraph, subscribes.tag, \
+                    subscribes.enable_notification, subscribes.enable_telegraph, subscribes.enable_source_title, subscribes.tag, \
                     subscribes.interval, subscribes.wait_time, sources.link, sources.title \
              FROM subscribes JOIN sources ON sources.id = subscribes.source_id \
              WHERE subscribes.user_id = ? ORDER BY sources.id",
@@ -342,6 +343,31 @@ impl Repo {
         self.subscription(user_id, source_id).await
     }
 
+    pub async fn toggle_subscription_source_title(
+        &self,
+        user_id: i64,
+        source_id: i64,
+    ) -> sqlx::Result<Option<Subscribe>> {
+        let Some(sub) = self.subscription(user_id, source_id).await? else {
+            return Ok(None);
+        };
+        let new_value = if sub.enable_source_title == Some(1) {
+            0
+        } else {
+            1
+        };
+        sqlx::query(
+            "UPDATE subscribes SET enable_source_title = ?, updated_at = CURRENT_TIMESTAMP \
+             WHERE user_id = ? AND source_id = ?",
+        )
+        .bind(new_value)
+        .bind(user_id)
+        .bind(source_id)
+        .execute(&self.pool)
+        .await?;
+        self.subscription(user_id, source_id).await
+    }
+
     /// Port of Go's `Core.EnableSourceUpdate` / `ClearSourceErrorCount`: this
     /// pauses/resumes the *source* for all its subscribers (not a per-user
     /// flag), by clearing its `error_count` below `ERROR_THRESHOLD`.
@@ -386,7 +412,7 @@ impl Repo {
 
     pub async fn subscribes_for_source(&self, source_id: i64) -> sqlx::Result<Vec<Subscribe>> {
         sqlx::query_as::<_, Subscribe>(
-            "SELECT id, user_id, source_id, enable_notification, enable_telegraph, tag, interval, wait_time, created_at, updated_at \
+            "SELECT id, user_id, source_id, enable_notification, enable_telegraph, enable_source_title, tag, interval, wait_time, created_at, updated_at \
              FROM subscribes WHERE source_id = ? ORDER BY id",
         )
         .bind(source_id)
@@ -751,6 +777,36 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(sub.enable_telegraph, Some(0));
+    }
+
+    #[tokio::test]
+    async fn subscription_source_title_toggle() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let pool = db::connect(db_path.to_str().unwrap()).await.unwrap();
+        let repo = Repo::new(pool);
+
+        let source_id = repo
+            .insert_source("https://example.com/feed", "Example")
+            .await
+            .unwrap();
+        repo.subscribe_user(42, source_id).await.unwrap();
+
+        // New subscriptions default to enable_source_title = 1
+        // (see `subscribe_user` and migration 0004), so the first toggle
+        // disables it.
+        let sub = repo
+            .toggle_subscription_source_title(42, source_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sub.enable_source_title, Some(0));
+        let sub = repo
+            .toggle_subscription_source_title(42, source_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sub.enable_source_title, Some(1));
     }
 
     #[tokio::test]

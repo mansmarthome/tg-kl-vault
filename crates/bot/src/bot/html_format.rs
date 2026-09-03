@@ -117,10 +117,11 @@ pub fn compose_feed_message(
     tags: &str,
     description_html: &str,
     telegraph_url: Option<&str>,
+    show_source_title: bool,
 ) -> String {
     let mut out = String::new();
 
-    if !source_title.is_empty() {
+    if show_source_title && !source_title.is_empty() {
         out.push_str("<b>");
         push_escape_text(&mut out, source_title);
         out.push_str("</b>\n");
@@ -620,6 +621,7 @@ mod tests {
             "#tag",
             "",
             None,
+            true,
         );
         assert!(
             html.contains("<b>源&lt;b&gt;danger&lt;/b&gt;</b>"),
@@ -641,6 +643,7 @@ mod tests {
             "",
             "",
             Some("https://telegra.ph/foo"),
+            true,
         );
         assert!(
             html.contains(" | <a href=\"https://telegra.ph/foo\">Telegraph</a>"),
@@ -650,24 +653,32 @@ mod tests {
 
     #[test]
     fn compose_with_empty_description_is_header_only() {
-        let html = compose_feed_message("源", "title", "https://example.com/p", "", "", None);
+        let html = compose_feed_message("源", "title", "https://example.com/p", "", "", None, true);
         let expected = "<b>源</b>\n<b><u><a href=\"https://example.com/p\">title</a></u></b>\n";
         assert_eq!(html, expected);
     }
 
     #[test]
     fn compose_skips_source_title_when_empty() {
-        let html = compose_feed_message("", "title", "https://example.com/p", "", "", None);
+        let html = compose_feed_message("", "title", "https://example.com/p", "", "", None, true);
         let expected = "<b><u><a href=\"https://example.com/p\">title</a></u></b>\n";
         assert_eq!(html, expected);
         assert!(!html.starts_with("<b></b>"), "got: {html:?}");
     }
 
     #[test]
+    fn compose_skips_source_title_when_flag_is_false() {
+        let html = compose_feed_message("源", "title", "https://example.com/p", "", "", None, false);
+        let expected = "<b><u><a href=\"https://example.com/p\">title</a></u></b>\n";
+        assert_eq!(html, expected);
+        assert!(!html.contains("<b>源</b>"), "title leaked: {html:?}");
+    }
+
+    #[test]
     fn compose_drops_anchor_when_item_link_is_empty() {
         // Telegram rejects `<a href=""></a>` as an unclosed tag, so the
         // header must not emit an anchor when the feed item has no link.
-        let html = compose_feed_message("源", "title", "", "", "", None);
+        let html = compose_feed_message("源", "title", "", "", "", None, true);
         let expected = "<b>源</b>\n<b><u>title</u></b>\n";
         assert_eq!(html, expected);
         assert!(!html.contains("<a"), "anchor leaked: {html:?}");
@@ -675,7 +686,7 @@ mod tests {
 
     #[test]
     fn compose_with_empty_source_and_link_keeps_plain_title() {
-        let html = compose_feed_message("", "title", "", "", "", None);
+        let html = compose_feed_message("", "title", "", "", "", None, true);
         let expected = "<b><u>title</u></b>\n";
         assert_eq!(html, expected);
     }
@@ -692,6 +703,7 @@ mod tests {
             "",
             desc,
             None,
+            true,
         );
         assert!(!html.contains("href=\"\""), "empty href leaked: {html:?}");
         assert!(!html.contains("<a></a>"), "empty anchor leaked: {html:?}");
@@ -707,6 +719,7 @@ mod tests {
             "",
             "<p>Hello <b>world</b></p>",
             None,
+            true,
         );
         assert!(html.contains("<b>world</b>"), "got: {html:?}");
         assert!(html.contains("Hello"), "got: {html:?}");
@@ -782,7 +795,7 @@ mod tests {
     #[test]
     fn compose_truncates_long_descriptions_keeping_header_intact() {
         let big = "a".repeat(MESSAGE_TEXT_LIMIT + 500);
-        let html = compose_feed_message("源", "title", "https://x", "", &big, None);
+        let html = compose_feed_message("源", "title", "https://x", "", &big, None, true);
         assert!(html.chars().count() <= MESSAGE_TEXT_LIMIT, "len={}", html.chars().count());
         // Header lines are preserved.
         assert!(html.contains("<b>源</b>"), "header lost");
@@ -799,7 +812,7 @@ mod tests {
         // snap back to the last `</…>` so the cut never lands inside a tag.
         let link = "<a href=\"https://example.com/very/long/path/that/forces/truncation\">click me</a>";
         let big = format!("{} {}", link, "x".repeat(MESSAGE_TEXT_LIMIT));
-        let html = compose_feed_message("源", "title", "https://x", "", &big, None);
+        let html = compose_feed_message("源", "title", "https://x", "", &big, None, true);
         let opens = html.matches("<a ").count();
         let closes = html.matches("</a>").count();
         assert_eq!(opens, closes, "unbalanced anchors: {html:?}");

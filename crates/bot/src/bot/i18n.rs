@@ -173,6 +173,12 @@ strings! {
     set_toggle_telegraph_on => en: "Enable Telegraph transcoding",
         zh: "開啟 Telegraph 轉碼",
         ru: "Включить Telegraph-транскодирование";
+    set_toggle_source_title_off => en: "Disable source title",
+        zh: "關閉標題顯示",
+        ru: "Скрыть заголовок источника";
+    set_toggle_source_title_on => en: "Enable source title",
+        zh: "開啟標題顯示",
+        ru: "Показывать заголовок источника";
     set_tag_button => en: "Tags",
         zh: "標籤設置",
         ru: "Теги";
@@ -288,10 +294,15 @@ impl Lang {
             Some(1) => self.set_telegraph_on(),
             _ => "",
         };
+        let source_title = match data.enable_source_title {
+            Some(0) => self.set_source_title_off(),
+            Some(1) => self.set_source_title_on(),
+            _ => "",
+        };
         let tag = if data.tag.is_empty() { self.feed_tag_none() } else { data.tag };
         match self {
             Self::En => format!(
-                "\nFeed <b>settings</b>\n[id] {id}\n[Title] {title}\n[Link] {link}\n[Status] {status}\n[Interval] {interval} min\n[Notify] {notice}\n[Telegraph] {telegraph}\n[Tags] {tag}\n",
+                "\nFeed <b>settings</b>\n[id] {id}\n[Title] {title}\n[Link] {link}\n[Status] {status}\n[Interval] {interval} min\n[Notify] {notice}\n[Telegraph] {telegraph}\n[Source Title] {source_title}\n[Tags] {tag}\n",
                 id = data.source_id,
                 title = data.source_title,
                 link = data.source_link,
@@ -299,14 +310,15 @@ impl Lang {
                 interval = data.interval,
                 notice = notice,
                 telegraph = telegraph,
+                source_title = source_title,
                 tag = tag,
             ),
             Self::ZhTw => format!(
-                "\n訂閱<b>設置</b>\n[id] {}\n[標題] {}\n[Link] {}\n[抓取更新] {}\n[抓取頻率] {}分鐘\n[通知] {}\n[Telegraph] {}\n[Tag] {}\n",
-                data.source_id, data.source_title, data.source_link, status, data.interval, notice, telegraph, tag
+                "\n訂閱<b>設置</b>\n[id] {}\n[標題] {}\n[Link] {}\n[抓取更新] {}\n[抓取頻率] {}分鐘\n[通知] {}\n[Telegraph] {}\n[標題顯示] {}\n[Tag] {}\n",
+                data.source_id, data.source_title, data.source_link, status, data.interval, notice, telegraph, source_title, tag
             ),
             Self::Ru => format!(
-                "\nПараметры <b>подписки</b>\n[id] {id}\n[Заголовок] {title}\n[Ссылка] {link}\n[Статус] {status}\n[Интервал] {interval} мин\n[Уведомления] {notice}\n[Telegraph] {telegraph}\n[Теги] {tag}\n",
+                "\nПараметры <b>подписки</b>\n[id] {id}\n[Заголовок] {title}\n[Ссылка] {link}\n[Статус] {status}\n[Интервал] {interval} мин\n[Уведомления] {notice}\n[Telegraph] {telegraph}\n[Заголовок источника] {source_title}\n[Теги] {tag}\n",
                 id = data.source_id,
                 title = data.source_title,
                 link = data.source_link,
@@ -314,6 +326,7 @@ impl Lang {
                 interval = data.interval,
                 notice = notice,
                 telegraph = telegraph,
+                source_title = source_title,
                 tag = tag,
             ),
         }
@@ -355,6 +368,20 @@ impl Lang {
         }
     }
     pub fn set_telegraph_off(self) -> &'static str {
+        match self {
+            Self::En => "off",
+            Self::ZhTw => "關閉",
+            Self::Ru => "выкл.",
+        }
+    }
+    pub fn set_source_title_on(self) -> &'static str {
+        match self {
+            Self::En => "on",
+            Self::ZhTw => "開啟",
+            Self::Ru => "вкл.",
+        }
+    }
+    pub fn set_source_title_off(self) -> &'static str {
         match self {
             Self::En => "off",
             Self::ZhTw => "關閉",

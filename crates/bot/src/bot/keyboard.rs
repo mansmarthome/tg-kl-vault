@@ -38,6 +38,7 @@ pub fn feed_setting_keyboard(
     error_threshold: i64,
     enable_notification: Option<i64>,
     enable_telegraph: Option<i64>,
+    enable_source_title: Option<i64>,
     lang: Lang,
 ) -> InlineKeyboardMarkup {
     let toggle_update_text = if source_error_count >= error_threshold {
@@ -54,6 +55,11 @@ pub fn feed_setting_keyboard(
         lang.set_toggle_telegraph_off()
     } else {
         lang.set_toggle_telegraph_on()
+    };
+    let toggle_source_title_text = if enable_source_title == Some(1) {
+        lang.set_toggle_source_title_off()
+    } else {
+        lang.set_toggle_source_title_on()
     };
 
     InlineKeyboardMarkup::new(vec![
@@ -77,6 +83,10 @@ pub fn feed_setting_keyboard(
                 encode_telebot_callback(Button::SetSetSubTag, attachment),
             ),
         ],
+        vec![InlineKeyboardButton::callback(
+            toggle_source_title_text,
+            encode_telebot_callback(Button::SetToggleSourceTitle, attachment),
+        )],
     ])
 }
 

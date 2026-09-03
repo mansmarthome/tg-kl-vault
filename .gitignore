@@ -246,15 +246,14 @@ pip-selfcheck.json
 
 .idea/*
 .vscode/*
+.kilo/
 __pycache__/*
 
 config.yml
 flowerss-bot
 
 config.toml
-.kilo/
 
-*.db
 .dockerfile
-*.db-shm
-*.db-wal
+
+data/

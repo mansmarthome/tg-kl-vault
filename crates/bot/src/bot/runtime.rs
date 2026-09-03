@@ -532,6 +532,7 @@ async fn handle_check(
                         .unwrap_or("");
                     let enable_telegraph =
                         sub.enable_telegraph == Some(1) && telegraph_url.is_some();
+                    let show_source_title = sub.enable_source_title == Some(1);
                     let composed = compose_feed_message(
                         source.title.as_deref().unwrap_or(""),
                         &item.title,
@@ -539,6 +540,7 @@ async fn handle_check(
                         sub.tag.as_deref().unwrap_or(""),
                         description_html,
                         if enable_telegraph { telegraph_url.as_deref() } else { None },
+                        show_source_title,
                     );
                     let _ = sender
                         .send_text(

@@ -97,6 +97,17 @@ pub async fn handle_callback(
             )
             .await
         }
+        Button::SetToggleSourceTitle => {
+            handle_toggle_source_title(
+                &bot,
+                &query,
+                &state,
+                callback.attachment,
+                chat_id,
+                message_id,
+            )
+            .await
+        }
         Button::SetSetSubTag => {
             handle_set_sub_tag(&bot, &state, &query, callback.attachment, chat_id, message_id)
                 .await
@@ -244,6 +255,7 @@ async fn render_and_edit_setting(
         interval: sub.interval.unwrap_or(0),
         enable_notification: sub.enable_notification,
         enable_telegraph: sub.enable_telegraph,
+        enable_source_title: sub.enable_source_title,
         tag: sub.tag.as_deref().unwrap_or(""),
     };
     let text = render_feed_setting(lang, &data);
@@ -253,6 +265,7 @@ async fn render_and_edit_setting(
         i64::from(ERROR_THRESHOLD),
         sub.enable_notification,
         sub.enable_telegraph,
+        sub.enable_source_title,
         lang,
     );
     bot.edit_message_text(chat_id, message_id, text)
@@ -353,6 +366,33 @@ async fn handle_toggle_telegraph(
     let Ok(Some(sub)) = state
         .repo
         .toggle_subscription_telegraph(attachment.user_id, source_id)
+        .await
+    else {
+        return respond_toast(bot, query, lang.toast_error()).await;
+    };
+    respond_toast(bot, query, lang.set_modified_toast()).await?;
+    render_and_edit_setting(bot, chat_id, message_id, &source, &sub, attachment, lang).await
+}
+
+async fn handle_toggle_source_title(
+    bot: &Bot,
+    query: &CallbackQuery,
+    state: &BotState,
+    attachment: Attachment,
+    chat_id: ChatId,
+    message_id: MessageId,
+) -> ResponseResult<()> {
+    let lang = chat_lang(&state.repo, chat_id.0).await;
+    if !is_authorized(attachment, query) {
+        return respond_toast(bot, query, lang.toast_error()).await;
+    }
+    let source_id = i64::from(attachment.source_id);
+    let Ok(Some(source)) = state.repo.get_source(source_id).await else {
+        return respond_toast(bot, query, lang.toast_error()).await;
+    };
+    let Ok(Some(sub)) = state
+        .repo
+        .toggle_subscription_source_title(attachment.user_id, source_id)
         .await
     else {
         return respond_toast(bot, query, lang.toast_error()).await;

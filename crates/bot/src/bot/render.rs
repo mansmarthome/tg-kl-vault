@@ -10,6 +10,7 @@ pub struct FeedSettingData<'a> {
     pub interval: i64,
     pub enable_notification: Option<i64>,
     pub enable_telegraph: Option<i64>,
+    pub enable_source_title: Option<i64>,
     pub tag: &'a str,
 }
 
@@ -32,6 +33,7 @@ mod tests {
             interval: 10,
             enable_notification: Some(1),
             enable_telegraph: Some(0),
+            enable_source_title: Some(1),
             tag,
         }
     }

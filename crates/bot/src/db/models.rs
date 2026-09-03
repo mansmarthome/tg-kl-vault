@@ -29,6 +29,7 @@ pub struct Subscribe {
     pub source_id: Option<i64>,
     pub enable_notification: Option<i64>,
     pub enable_telegraph: Option<i64>,
+    pub enable_source_title: Option<i64>,
     pub tag: Option<String>,
     pub interval: Option<i64>,
     pub wait_time: Option<i64>,
